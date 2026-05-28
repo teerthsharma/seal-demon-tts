@@ -54,10 +54,10 @@ def collate_fn(batch):
     return {
         "input_waveform": torch.stack([pad_w(b["input_waveform"]) for b in batch]).unsqueeze(1),  # [B, 1, T]
         "target_waveform": torch.stack([pad_w(b["target_waveform"]) for b in batch]).unsqueeze(1),  # [B, 1, T]
-        "mel": torch.stack([pad_m(b["mel"]) for b in batch]).unsqueeze(0) if batch[0]["mel"].dim() == 2 else torch.stack([pad_m(b["mel"]) for b in batch]),
+        "mel": torch.stack([pad_m(b["mel"]) for b in batch]),
         "speaker_emb": torch.stack([b["speaker_emb"] for b in batch]),
-        "f0": torch.stack([pad_m(b["f0"]) for b in batch]).unsqueeze(1),  # [B, 1, T_mel]
-        "energy": torch.stack([pad_m(b["energy"]) for b in batch]).unsqueeze(1),  # [B, 1, T_mel]
+        "f0": torch.stack([pad_m(b["f0"]) for b in batch]),  # [B, 1, T_mel]
+        "energy": torch.stack([pad_m(b["energy"]) for b in batch]),  # [B, 1, T_mel]
     }
 
 

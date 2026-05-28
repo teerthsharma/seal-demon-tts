@@ -1,4 +1,4 @@
-"""DemonTTS inference engine – wraps student, faraday, aether, vocoder."""
+"""DemonTTS inference engine — SpeechT5 base + Faraday + Aether."""
 
 import json
 import os
@@ -11,148 +11,54 @@ import numpy as np
 import soundfile as sf
 import torch
 import torchaudio
-from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
+from transformers import SpeechT5ForTextToSpeech, SpeechT5HifiGan, SpeechT5Processor
 
 from aether.model import AetherFilter, count_parameters as aether_count
 from faraday.model import FaradayDiffusion, count_parameters as faraday_count
 from neural.speaker_encoder import SpeakerEncoder, count_parameters as spk_count
-from neural.student import StudentTTS, count_parameters as student_count
-from neural.vocoder import HiFiGenerator, count_parameters as vocoder_count
-
-
-class SimpleTokenizer:
-    """BPE tokenizer with 10k vocab. Creates a basic one on first run."""
-
-    def __init__(self, vocab_size: int = 10_000, model_path: str = "./models/tokenizer.json"):
-        self.vocab_size = vocab_size
-        self.model_path = Path(model_path)
-        self.model_path.parent.mkdir(parents=True, exist_ok=True)
-        self.pad_id = 0
-        self.unk_id = 1
-        self.eos_id = 2
-        self._load_or_create()
-
-    def _load_or_create(self):
-        if self.model_path.exists():
-            self.tokenizer = Tokenizer.from_file(str(self.model_path))
-            return
-
-        print("[Tokenizer] No tokenizer found – training a minimal BPE model...")
-        tokenizer = Tokenizer(models.BPE(unk_token="<unk>"))
-        tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
-        tokenizer.decoder = decoders.BPEDecoder()
-
-        trainer = trainers.BpeTrainer(
-            vocab_size=self.vocab_size,
-            special_tokens=["<pad>", "<unk>", "<eos>", "<s>"],
-        )
-        corpus = [
-            "The quick brown fox jumps over the lazy dog. " * 200,
-            "In the beginning God created the heaven and the earth. " * 100,
-            "To be or not to be, that is the question. " * 100,
-            "It was the best of times, it was the worst of times. " * 100,
-            "Call me Ishmael. Some years ago never mind how long precisely having little or no money in my purse. " * 50,
-            "Hello world. This is a test of the emergency broadcast system. " * 100,
-            "Artificial intelligence is transforming the way we interact with technology. " * 80,
-            "The speaker said Hello everyone. Welcome to the conference. " * 50,
-        ]
-        tokenizer.train_from_iterator(corpus, trainer=trainer)
-        tokenizer.save(str(self.model_path))
-        self.tokenizer = tokenizer
-        print(f"[Tokenizer] Saved to {self.model_path} (vocab={len(tokenizer.get_vocab())})")
-
-    def encode(self, text: str) -> List[int]:
-        ids = self.tokenizer.encode(text).ids
-        return [min(i, self.vocab_size - 1) for i in ids]
-
-
-class GriffinLimVocoder(torch.nn.Module):
-    """Griffin-Lim fallback vocoder (mel -> waveform)."""
-
-    def __init__(
-        self,
-        n_mels: int = 80,
-        n_fft: int = 1024,
-        hop_length: int = 256,
-        sample_rate: int = 24000,
-    ):
-        super().__init__()
-        self.sample_rate = sample_rate
-        self.hop_length = hop_length
-        self.inverse_mel = torchaudio.transforms.InverseMelScale(
-            n_stft=n_fft // 2 + 1,
-            n_mels=n_mels,
-            sample_rate=sample_rate,
-        )
-        self.griffin_lim = torchaudio.transforms.GriffinLim(
-            n_fft=n_fft,
-            hop_length=hop_length,
-            win_length=n_fft,
-            n_iter=32,
-        )
-
-    @torch.inference_mode()
-    def forward(self, mel: torch.Tensor) -> torch.Tensor:
-        linear = self.inverse_mel(mel)  # [B, n_fft//2+1, T]
-        return self.griffin_lim(linear)  # [B, samples]
-
-
-class MelVocoder(torch.nn.Module):
-    """HiFi-GAN if checkpoint exists, else Griffin-Lim."""
-
-    def __init__(self, model_dir: str = "./models", device: str = "cpu"):
-        super().__init__()
-        self.device = device
-        self.use_hifigan = False
-        hifigan_path = Path(model_dir) / "hifigan.pt"
-        if hifigan_path.exists():
-            try:
-                self.hifigan = HiFiGenerator().to(device)
-                state = torch.load(hifigan_path, map_location=device, weights_only=True)
-                self.hifigan.load_state_dict(state)
-                self.hifigan.eval()
-                self.use_hifigan = True
-                print("[MelVocoder] Loaded HiFi-GAN checkpoint")
-            except Exception as exc:
-                warnings.warn(f"HiFi-GAN load failed: {exc}. Using Griffin-Lim fallback.")
-        if not self.use_hifigan:
-            self.fallback = GriffinLimVocoder().to(device)
-            print("[MelVocoder] Using Griffin-Lim fallback")
-
-    @torch.inference_mode()
-    def forward(self, mel: torch.Tensor) -> torch.Tensor:
-        if self.use_hifigan:
-            return self.hifigan(mel)  # [B, samples]
-        return self.fallback(mel)
 
 
 class DemonTTS:
-    """End-to-end TTS pipeline."""
+    """End-to-end TTS: SpeechT5 → Faraday → Vocoder → Aether."""
 
     def __init__(
         self,
         model_dir: str = "./models",
         device: str = None,
-        max_tokens: int = 512,
+        max_chars: int = 400,
     ):
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.device = torch.device(
             device or ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        self.max_tokens = max_tokens
+        self.max_chars = max_chars
         print(f"[DemonTTS] Device: {self.device}")
 
-        self.student = self._load_model("student.pt", StudentTTS)
-        self.speaker_encoder = self._load_model("speaker_encoder.pt", SpeakerEncoder)
+        # Pretrained base TTS
+        print("[DemonTTS] Loading SpeechT5 teacher...")
+        self.processor = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts")
+        self.tts = SpeechT5ForTextToSpeech.from_pretrained(
+            "microsoft/speecht5_tts", use_safetensors=True
+        ).to(self.device)
+        self.vocoder = SpeechT5HifiGan.from_pretrained(
+            "microsoft/speecht5_hifigan", use_safetensors=True
+        ).to(self.device)
+        self.tts.eval()
+        self.vocoder.eval()
+
+        # Enhancement networks
         self.faraday = self._load_model("faraday.pt", FaradayDiffusion)
         self.aether = self._load_model("aether.pt", AetherFilter)
-        self.vocoder = MelVocoder(model_dir=model_dir, device=self.device).to(self.device)
+        self.speaker_encoder = self._load_model("speaker_encoder.pt", SpeakerEncoder)
 
-        # Project 192-dim speaker emb to 256-dim for Faraday conditioning
-        self.spk_proj_faraday = torch.nn.Linear(192, 256).to(self.device)
+        # Default speaker embedding for SpeechT5 (512-dim)
+        self.default_speaker = torch.randn(1, 512).to(self.device)
 
-        self.tokenizer = SimpleTokenizer(model_path=str(self.model_dir / "tokenizer.json"))
+        # Mel transform for Aether conditioning (24kHz)
+        self.mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=24000, n_fft=1024, hop_length=256, n_mels=80
+        ).to(self.device)
 
         self.voices_path = self.model_dir / "voices.json"
         self.voices: Dict[str, np.ndarray] = self._load_voices()
@@ -206,7 +112,7 @@ class DemonTTS:
         chunks: List[str] = []
         current = ""
         for sent in sentences:
-            if len(current) + len(sent) < self.max_tokens * 4:
+            if len(current) + len(sent) < self.max_chars:
                 current += " " + sent
             else:
                 if current:
@@ -224,6 +130,8 @@ class DemonTTS:
         text: str,
         speaker_emb: Optional[np.ndarray] = None,
         voice_id: Optional[str] = None,
+        use_faraday: bool = True,
+        use_aether: bool = True,
     ) -> np.ndarray:
         if speaker_emb is None and voice_id is not None:
             speaker_emb = self.voices.get(voice_id)
@@ -239,65 +147,58 @@ class DemonTTS:
             torch.from_numpy(speaker_emb).float().unsqueeze(0).to(self.device)
         )
 
-        spk_faraday = self.spk_proj_faraday(speaker_emb_t)  # [1, 256]
-
         chunks = self._chunk_text(text)
         waveforms: List[np.ndarray] = []
 
         for chunk in chunks:
-            tokens = self.tokenizer.encode(chunk)
-            if not tokens:
-                continue
-            tokens = tokens[: self.max_tokens]
-            token_tensor = torch.tensor([tokens], dtype=torch.long, device=self.device)
+            inputs = self.processor(text=chunk, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            # Student → mel
-            mel = self.student(token_tensor, speaker_emb_t)  # [1, 80, T]
+            # SpeechT5 → spectrogram [T, 80]
+            spectrogram = self.tts.generate_speech(inputs["input_ids"], self.default_speaker)
+            # Reshape to [1, 80, T] for Faraday
+            mel = spectrogram.T.unsqueeze(0)  # [1, 80, T]
 
-            # Faraday diffusion enhancement
-            mel = mel.unsqueeze(1)  # [1, 1, 80, T]
-            text_emb = torch.zeros(1, 512, device=self.device)
-            mel_enhanced = self.faraday.enhance(
-                mel, text_emb=text_emb, speaker_emb=spk_faraday, steps=10
-            )
-            mel_enhanced = mel_enhanced.squeeze(1)  # [1, 80, T]
+            # Faraday enhancement (supervised mode)
+            if use_faraday:
+                mel = mel.unsqueeze(1)  # [1, 1, 80, T]
+                text_emb = torch.zeros(1, 512, device=self.device)
+                spk_faraday = torch.zeros(1, 256, device=self.device)
+                if speaker_emb_t.shape[1] == 192:
+                    spk_proj = torch.nn.Linear(192, 256).to(self.device)
+                    spk_faraday = spk_proj(speaker_emb_t)
+                mel_enhanced = self.faraday.supervised_enhance(
+                    mel, text_emb=text_emb, speaker_emb=spk_faraday
+                )
+                mel = mel_enhanced.squeeze(1)  # [1, 80, T]
 
-            # Vocoder
-            wav = self.vocoder(mel_enhanced)  # [1, samples]
-            waveforms.append(wav.cpu().numpy()[0])
+            # Vocoder → waveform @ 16kHz
+            wav_16k = self.vocoder(mel.squeeze(0).T)  # [T_samples]
+
+            # Resample to 24kHz for Aether
+            wav_24k = torchaudio.transforms.Resample(16000, 24000).to(self.device)(wav_16k)
+
+            # Aether waveform polish
+            if use_aether:
+                wav_t = wav_24k.unsqueeze(0).unsqueeze(0).to(self.device)  # [1, 1, T]
+                aether_mel = self.mel_transform(wav_t.squeeze(1))  # [1, 80, T_mel]
+                aether_mel = torch.log(aether_mel + 1e-6)
+                T_mel = aether_mel.shape[2]
+                energy = aether_mel.mean(dim=1, keepdim=True)  # [1, 1, T]
+                f0 = torch.zeros(1, 1, T_mel, device=self.device)
+                spk_aether = speaker_emb_t
+                if spk_aether.shape[1] != 192:
+                    spk_proj = torch.nn.Linear(spk_aether.shape[1], 192).to(self.device)
+                    spk_aether = spk_proj(spk_aether)
+                wav_refined = self.aether(wav_t, aether_mel, spk_aether, f0, energy)
+                wav_24k = wav_refined[0, 0]
+
+            waveforms.append(wav_24k.cpu().numpy())
 
         if not waveforms:
             return np.zeros(0, dtype=np.float32)
 
-        full_wav = np.concatenate(waveforms)
-
-        # Aether filter on full waveform
-        wav_t = (
-            torch.from_numpy(full_wav)
-            .float()
-            .unsqueeze(0)
-            .unsqueeze(0)
-            .to(self.device)
-        )
-
-        # Compute mel / f0 / energy for Aether
-        mel_tf = torchaudio.transforms.MelSpectrogram(
-            sample_rate=24_000,
-            n_fft=1024,
-            hop_length=256,
-            n_mels=80,
-        ).to(self.device)
-        aether_mel = mel_tf(wav_t.squeeze(1))  # [B, 80, T_mel]
-        aether_mel = torch.log(aether_mel + 1e-6)
-        T_mel = aether_mel.shape[2]
-
-        # Energy = mean mel energy per frame
-        energy = aether_mel.mean(dim=1, keepdim=True)  # [1, 1, T]
-        # F0 placeholder (zeros – Aether is untrained so this is fine for demo)
-        f0 = torch.zeros(1, 1, T_mel, device=self.device)
-
-        refined = self.aether(wav_t, aether_mel, speaker_emb_t, f0, energy)
-        return refined.cpu().numpy()[0, 0]
+        return np.concatenate(waveforms)
 
     def save_wav(self, wav: np.ndarray, path: str, sample_rate: int = 24_000):
         sf.write(path, wav, sample_rate)
@@ -306,12 +207,14 @@ class DemonTTS:
 
 def main():
     tts = DemonTTS()
-    print(f"Student params:       {student_count(tts.student):,}")
-    print(f"SpeakerEncoder params: {spk_count(tts.speaker_encoder):,}")
     print(f"Faraday params:        {faraday_count(tts.faraday):,}")
     print(f"Aether params:         {aether_count(tts.aether.filter_net):,}")
+    print(f"SpeakerEncoder params: {spk_count(tts.speaker_encoder):,}")
 
-    wav = tts.synthesize("Hello world. This is a test of the demon speech engine.")
+    wav = tts.synthesize(
+        "Hello world. This is a test of the demon speech engine.",
+        voice_id="Rick C-137",
+    )
     print(f"Synthesized {len(wav)} samples ({len(wav) / 24_000:.2f}s)")
     tts.save_wav(wav, "test_output.wav")
 
