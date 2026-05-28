@@ -1,0 +1,18 @@
+{
+  "Chapter 1: The Awakening": {
+    "title": "Chapter 1: The Awakening",
+    "text": "In the beginning, there was silence. Then came the voice. A voice that could shatter dimensions and\nbend time itself. The demon stirred beneath the ancient seal, waiting for the right moment to break\nfree.",
+    "speakers": {},
+    "source_pdf": "sample.pdf"
+  },
+  "Chapter 2: The Ritual": {
+    "title": "Chapter 2: The Ritual",
+    "text": "Rick grabbed the portal gun and adjusted the dial. Morty stood behind him, trembling. We need\nexactly three ounces of dark matter, Rick said. Morty replied: Why do I always have to carry the\nunstable stuff? Because you are the unstable stuff, Rick grinned.",
+    "speakers": {
+      "Morty": [
+        "Why do I always have to carry the"
+      ]
+    },
+    "source_pdf": "sample.pdf"
+  }
+}

@@ -1,0 +1,12 @@
+target/
+__pycache__/
+*.egg-info/
+*.onnx
+*.ckpt
+*.pt
+runs/
+checkpoints/
+data/
+*.wav
+*.mp3
+.ipynb_checkpoints/

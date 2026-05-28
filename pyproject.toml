@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demon-tts"
+version = "0.1.0"
+description = "ElevenLabs-killing TTS pipeline: 180M student + diffusion + filter"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "torchaudio>=2.2",
+    "lightning>=2.2",
+    "transformers>=4.38",
+    "datasets>=2.18",
+    "tokenizers>=0.15",
+    "peft>=0.9",
+    "TTS>=0.22",
+    "onnx",
+    "onnxruntime-gpu",
+    "nvidia-ml-py",
+    "tensorboard",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["neural*", "faraday*", "aether*", "training*"]

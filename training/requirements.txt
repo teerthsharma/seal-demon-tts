@@ -1,0 +1,8 @@
+# Additional training-only dependencies
+peft>=0.9
+TTS>=0.22
+phonemizer>=3.2
+speechbrain>=0.5.16
+resemblyzer>=0.1.1
+onnxruntime-gpu>=1.17
+nvidia-ml-py>=12.535
