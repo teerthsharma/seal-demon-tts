@@ -75,6 +75,75 @@ class FaradayDiffusion(nn.Module):
         cond = self._fuse_conditioning(text_emb, speaker_emb)
         return self.unet(noisy_mel, t, cond)
 
+    # ------------------------------------------------------------------
+    # Supervised (deterministic) mode — FDFD solver as direct enhancer
+    # ------------------------------------------------------------------
+
+    def supervised_forward(
+        self,
+        input_mel: torch.Tensor,
+        text_emb: Optional[torch.Tensor] = None,
+        speaker_emb: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Predict enhancement residual directly (no diffusion).
+
+        Args:
+            input_mel:  [B, 1, 80, T]
+            text_emb:   [B, text_dim]
+            speaker_emb:[B, speaker_dim]
+
+        Returns:
+            [B, 1, 80, T] predicted residual
+        """
+        cond = self._fuse_conditioning(text_emb, speaker_emb)
+        t = torch.zeros(input_mel.shape[0], device=input_mel.device, dtype=torch.long)
+        return self.unet(input_mel, t, cond)
+
+    def supervised_enhance(
+        self,
+        input_mel: torch.Tensor,
+        text_emb: Optional[torch.Tensor] = None,
+        speaker_emb: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Direct enhancement: input_mel + predicted_residual.
+
+        Args:
+            input_mel:  [B, 1, 80, T]
+            text_emb:   [B, text_dim]
+            speaker_emb:[B, speaker_dim]
+
+        Returns:
+            [B, 1, 80, T] enhanced mel
+        """
+        residual = self.supervised_forward(input_mel, text_emb, speaker_emb)
+        return input_mel + residual
+
+    def supervised_training_loss(
+        self,
+        input_mel: torch.Tensor,
+        gt_mel: torch.Tensor,
+        text_emb: Optional[torch.Tensor] = None,
+        speaker_emb: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """L1 loss on predicted residual vs true residual.
+
+        Args:
+            input_mel:  [B, 1, 80, T]
+            gt_mel:     [B, 1, 80, T]
+            text_emb:   [B, text_dim]
+            speaker_emb:[B, speaker_dim]
+
+        Returns:
+            scalar loss tensor
+        """
+        pred_residual = self.supervised_forward(input_mel, text_emb, speaker_emb)
+        target_residual = gt_mel - input_mel
+        return torch.nn.functional.l1_loss(pred_residual, target_residual)
+
+    # ------------------------------------------------------------------
+    # Diffusion (generative) mode — original DDPM/DDIM
+    # ------------------------------------------------------------------
+
     def enhance(
         self,
         mel: torch.Tensor,
