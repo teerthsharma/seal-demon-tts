@@ -174,7 +174,7 @@ def main():
 
     for epoch in range(args.epochs):
         print(f"\n=== Epoch {epoch + 1}/{args.epochs} ===")
-        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum)
+        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum, epoch=epoch, output_dir=args.output_dir)
         val_loss = validate(model, val_loader, device)
         scheduler.step()
 
