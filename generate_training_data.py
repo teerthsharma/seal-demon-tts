@@ -50,8 +50,14 @@ def synthesize_teacher(text: str, processor, tts, vocoder, speaker_emb, device: 
     inputs = processor(text=text, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
+    # Truncate to SpeechT5 max position embeddings (600)
+    input_ids = inputs["input_ids"]
+    max_len = 600
+    if input_ids.shape[1] > max_len:
+        input_ids = input_ids[:, :max_len]
+
     with torch.no_grad():
-        spectrogram = tts.generate_speech(inputs["input_ids"], speaker_emb)
+        spectrogram = tts.generate_speech(input_ids, speaker_emb)
         # spectrogram: [T, 80]
         wav = vocoder(spectrogram)  # [T_samples]
 
@@ -162,6 +168,7 @@ def generate_pairs(
     output_dir: str,
     num_pairs: int = 5000,
     device: str = "cuda",
+    start_pair: int = 0,
 ):
     """Generate (input, target) pairs for Faraday and Aether."""
     out_path = Path(output_dir)
@@ -177,14 +184,14 @@ def generate_pairs(
     chunk_idx = 0
     pbar = tqdm(total=num_pairs, desc="Generating pairs")
 
-    for pair_id in range(num_pairs):
+    for pair_id in range(start_pair, num_pairs):
         text = text_chunks[chunk_idx % len(text_chunks)]
         chunk_idx += 1
 
         try:
             spec, wav_16k = synthesize_teacher(text, processor, tts, vocoder, speaker_emb, device)
         except Exception as exc:
-            print(f"[DataGen] Failed on chunk {chunk_id}: {exc}")
+            print(f"[DataGen] Failed on chunk {chunk_idx}: {exc}")
             continue
 
         # spec: [T, 80], wav_16k: [samples]
@@ -256,6 +263,7 @@ def main():
     parser.add_argument("--output_dir", default="./data")
     parser.add_argument("--num_pairs", type=int, default=5000)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--resume", action="store_true", help="Resume from existing pairs")
     args = parser.parse_args()
 
     processor, tts, vocoder = load_teacher_models(args.device)
@@ -263,6 +271,14 @@ def main():
 
     if len(text_chunks) == 0:
         raise ValueError("No text chunks found. Parse a book first.")
+
+    # Auto-resume: count existing pairs
+    start_pair = 0
+    if args.resume:
+        existing = len(list(Path(args.output_dir).glob("faraday_pairs/pair_*.pt")))
+        if existing > 0:
+            start_pair = existing
+            print(f"[DataGen] Resuming from pair {start_pair}")
 
     generate_pairs(
         text_chunks=text_chunks,
@@ -272,6 +288,7 @@ def main():
         output_dir=args.output_dir,
         num_pairs=args.num_pairs,
         device=args.device,
+        start_pair=start_pair,
     )
 
 
