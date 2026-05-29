@@ -61,10 +61,11 @@ def collate_fn(batch):
     }
 
 
-def train_epoch(model, loader, optimizer, device):
+def train_epoch(model, loader, optimizer, device, grad_accum=1):
     model.train()
     total_loss = 0.0
-    for batch in tqdm(loader, desc="Train"):
+    optimizer.zero_grad()
+    for step, batch in enumerate(tqdm(loader, desc="Train")):
         wav_in = batch["input_waveform"].to(device)
         wav_tgt = batch["target_waveform"].to(device)
         mel = batch["mel"].to(device)
@@ -72,13 +73,16 @@ def train_epoch(model, loader, optimizer, device):
         f0 = batch["f0"].to(device)
         energy = batch["energy"].to(device)
 
-        optimizer.zero_grad()
         _, loss = model(wav_in, mel, spk, f0, energy, target_waveform=wav_tgt)
+        loss = loss / grad_accum
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
 
-        total_loss += loss.item()
+        if (step + 1) % grad_accum == 0 or (step + 1) == len(loader):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+
+        total_loss += loss.item() * grad_accum
     return total_loss / len(loader)
 
 
@@ -103,7 +107,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", default="./data/aether_pairs")
     parser.add_argument("--output_dir", default="./checkpoints/aether")
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--device", default="cuda")
@@ -151,7 +156,7 @@ def main():
 
     for epoch in range(args.epochs):
         print(f"\n=== Epoch {epoch + 1}/{args.epochs} ===")
-        train_loss = train_epoch(model, train_loader, optimizer, device)
+        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum)
         val_loss = validate(model, val_loader, device)
         scheduler.step()
 
