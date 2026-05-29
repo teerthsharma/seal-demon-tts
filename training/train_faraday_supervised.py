@@ -130,7 +130,7 @@ def main():
 
     model = FaradayDiffusion(
         text_dim=512,
-        speaker_dim=256,
+        speaker_dim=512,  # Match training data (SpeechT5 speaker embeddings are 512-dim)
         cond_dim=512,
         base_channels=256,
     ).to(device)

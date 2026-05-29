@@ -56,8 +56,10 @@ class DemonTTS:
         self.default_speaker = torch.randn(1, 512).to(self.device)
 
         # Persistent projection layers — created ONCE, not in inference loop
-        self.spk_proj_faraday = torch.nn.Linear(192, 256).to(self.device)
-        self.spk_proj_aether = torch.nn.Linear(256, 192).to(self.device)
+        # Faraday expects 512-dim speaker (matches SpeechT5 training data)
+        self.spk_proj_faraday = torch.nn.Linear(192, 512).to(self.device)
+        # Aether expects 192-dim speaker
+        self.spk_proj_aether = torch.nn.Linear(512, 192).to(self.device)
 
         # Persistent resample — created ONCE
         self.resample_16to24 = torchaudio.transforms.Resample(16000, 24000).to(self.device)
