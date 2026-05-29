@@ -989,7 +989,7 @@ cached_tts.print_stats()
 
 **These claims are unproven.** The architecture supports them. The math predicts them. But **Seal** hasn't run 50 books yet.
 
-**Rick:** If you don't believe it, run the benchmark. Process 50 books. Measure the cache hit rate. If it's under 60%, **Seal** will buy you a GPU.
+**Rick:** If you don't believe it, run the benchmark. Process 50 books. Measure the cache hit rate. If it's under 60%, **Seal** will buy you a cig.
 
 **Seal:** *"It's not a bug, it's a compounding returns mechanism."*
 
