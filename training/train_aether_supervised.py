@@ -35,7 +35,7 @@ class WaveformPairDataset(Dataset):
         return len(self.paths)
 
     def __getitem__(self, idx):
-        data = torch.load(self.paths[idx])
+        data = torch.load(self.paths[idx], weights_only=True)
         return {
             "input_waveform": data["input_waveform"].squeeze(0),  # [T]
             "target_waveform": data["target_waveform"].squeeze(0),  # [T]

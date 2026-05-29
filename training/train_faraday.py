@@ -26,7 +26,7 @@ class MelPairDataset(Dataset):
         return len(self.paths)
 
     def __getitem__(self, idx):
-        data = torch.load(self.paths[idx])
+        data = torch.load(self.paths[idx], weights_only=True)
         return {
             "student_mel": data["student_mel"],  # [1, 80, T]
             "gt_mel": data["gt_mel"],            # [1, 80, T]

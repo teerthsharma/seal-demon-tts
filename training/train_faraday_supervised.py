@@ -25,21 +25,36 @@ from topology.barcode_loss import TopologicalLoss
 
 
 class MelPairDataset(Dataset):
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, preload: bool = True):
         self.paths = sorted(Path(data_dir).glob("*.pt"))
         if len(self.paths) == 0:
             raise ValueError(f"No .pt files found in {data_dir}")
+        self.samples = []
+        if preload:
+            print(f"[Dataset] Pre-loading {len(self.paths)} samples into RAM...")
+            for p in self.paths:
+                data = torch.load(p, weights_only=True)
+                self.samples.append({
+                    "student_mel": data["student_mel"].squeeze(0),
+                    "gt_mel": data["gt_mel"].squeeze(0),
+                    "text_emb": data["text_emb"],
+                    "speaker_emb": data["speaker_emb"],
+                })
+            print(f"[Dataset] Pre-loaded {len(self.samples)} samples")
+        self.preload = preload
 
     def __len__(self):
-        return len(self.paths)
+        return len(self.paths) if not self.preload else len(self.samples)
 
     def __getitem__(self, idx):
-        data = torch.load(self.paths[idx])
+        if self.preload:
+            return self.samples[idx]
+        data = torch.load(self.paths[idx], weights_only=True)
         return {
-            "student_mel": data["student_mel"].squeeze(0),  # [80, T]
-            "gt_mel": data["gt_mel"].squeeze(0),  # [80, T]
-            "text_emb": data["text_emb"],  # [512]
-            "speaker_emb": data["speaker_emb"],  # [512]
+            "student_mel": data["student_mel"].squeeze(0),
+            "gt_mel": data["gt_mel"].squeeze(0),
+            "text_emb": data["text_emb"],
+            "speaker_emb": data["speaker_emb"],
         }
 
 
@@ -54,7 +69,7 @@ def collate_fn(batch):
     }
 
 
-def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_dir=None, scaler=None, topo_loss_fn=None):
+def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_dir=None, scaler=None, topo_loss_fn=None, topo_interval=10):
     model.train()
     total_loss = 0.0
     optimizer.zero_grad()
@@ -68,7 +83,9 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_
 
         try:
             with torch.amp.autocast(device_type='cuda', enabled=use_amp):
-                if topo_loss_fn is not None:
+                # Topology loss is expensive (Ripser on CPU). Compute periodically.
+                use_topo = (topo_loss_fn is not None) and (topo_interval > 0) and (step % topo_interval == 0)
+                if use_topo:
                     pred_mel = model.supervised_enhance(student_mel, text_emb, speaker_emb)
                     loss = topo_loss_fn(pred_mel, gt_mel)
                 else:
@@ -142,6 +159,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num_workers", type=int, default=0, help="DataLoader workers (0=main thread, faster on Windows)")
+    parser.add_argument("--topo_interval", type=int, default=10, help="Compute topology loss every N steps (0=never)")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -171,7 +189,7 @@ def main():
     total = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[FaradayTrain] Params: {total:,} (~{total/1e6:.0f}M)")
 
-    ds = MelPairDataset(args.data_dir)
+    ds = MelPairDataset(args.data_dir, preload=True)
     train_size = int(0.9 * len(ds))
     val_size = len(ds) - train_size
     train_set, val_set = torch.utils.data.random_split(
@@ -212,6 +230,9 @@ def main():
     # Mixed precision scaler — cuts activation memory ~50%
     scaler = torch.amp.GradScaler(device='cuda') if device.type == "cuda" else None
 
+    # Topology-aware loss (Betti number matching from persistent homology)
+    topo_loss_fn = TopologicalLoss(betti_weight=0.1).to(device)
+
     best_val = float("inf")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -219,7 +240,7 @@ def main():
     import time
     for epoch in range(args.epochs):
         print(f"\n=== Epoch {epoch + 1}/{args.epochs} ===")
-        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum, epoch=epoch, output_dir=args.output_dir, scaler=scaler, topo_loss_fn=topo_loss_fn)
+        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum, epoch=epoch, output_dir=args.output_dir, scaler=scaler, topo_loss_fn=topo_loss_fn, topo_interval=args.topo_interval)
         val_loss = validate(model, val_loader, device, scaler=scaler)
         scheduler.step()
 

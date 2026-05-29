@@ -31,7 +31,7 @@ class TTSDataset(Dataset):
 
     def __getitem__(self, idx):
         # Expected .pt dict: {text_tokens, mel, speaker_waveform, teacher_mel}
-        data = torch.load(self.samples[idx])
+        data = torch.load(self.samples[idx], weights_only=True)
         return {
             "text_tokens": data["text_tokens"],
             "mel": data["mel"],
