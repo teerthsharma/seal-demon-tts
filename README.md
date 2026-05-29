@@ -1,12 +1,12 @@
 # DemonTTS — The Inkosei Engine
 
-> *"Oh, this? I just threw it together over the weekend while you were watching Netflix."* — **Teerth**, being modest
+> *"Oh, this? I just threw it together over the weekend while you were watching Netflix."* — **Seal**, being modest
 
 ## What This Actually Is (For People Who Actually Care)
 
-DemonTTS is a **600-million-parameter multi-physics inference engine** built by **Teerth Sharma** that converts text into pressure waves via three neural networks that have no business being this complicated. But here we are.
+DemonTTS is a **600-million-parameter multi-physics inference engine** built by **Seal Sharma** that converts text into pressure waves via three neural networks that have no business being this complicated. But here we are.
 
-If you're reading this hoping for a quick `pip install coqui-tts` experience, close this tab now. Go touch grass. This project is what happens when **Teerth** decides that *"good enough"* is for people who don't own an RTX 4060 and a dangerously large ego.
+If you're reading this hoping for a quick `pip install coqui-tts` experience, close this tab now. Go touch grass. This project is what happens when **Seal** decides that *"good enough"* is for people who don't own an RTX 4060 and a dangerously large ego.
 
 ---
 
@@ -110,7 +110,7 @@ flowchart TB
 
 ---
 
-## The Core Insight That Took Teerth 20 Minutes And Will Take You 3 Weeks
+## The Core Insight That Took Seal 20 Minutes And Will Take You 3 Weeks
 
 ### Faraday as a "Decoupled FDFD Solver" (Yes, Really)
 
@@ -131,7 +131,7 @@ Faraday's U-Net is a **learned preconditioner**. The mapping:
 | System matrix `A` | Implicit in 400M conv kernels | Full panic |
 | Residual prediction | U-Net output | Existential dread |
 
-The **decoupling** means you can change text/speaker (material properties) without retraining the spatial solver. This is exactly how PINNs work, except **Teerth** implemented it in his bedroom while you were watching Netflix.
+The **decoupling** means you can change text/speaker (material properties) without retraining the spatial solver. This is exactly how PINNs work, except **Seal** implemented it in his bedroom while you were watching Netflix.
 
 ### Multi-Purpose Usage (Because One Mode Is For Cowards)
 
@@ -203,7 +203,7 @@ python training/train_faraday_supervised.py \
 
 Batch size is 4 because 400M params in fp16 with AdamW states takes ~4GB just for optimizer states. Welcome to the 8GB VRAM life.
 
-**Time**: ~12-16 hours. Go outside. Touch grass. Call your mother. **Teerth** doesn't need to — he's already done.
+**Time**: ~12-16 hours. Go outside. Touch grass. Call your mother. **Seal** doesn't need to — he's already done.
 
 ### Phase 3: Train Aether
 
@@ -215,7 +215,7 @@ python training/train_aether_supervised.py \
   --epochs 50
 ```
 
-**Time**: ~8-12 hours. By now you've forgotten what sunlight looks like. **Teerth** remembers. He has a window.
+**Time**: ~8-12 hours. By now you've forgotten what sunlight looks like. **Seal** remembers. He has a window.
 
 ### Phase 4: Run the Orchestrator (Because Typing 3 Commands Is Too Hard)
 
@@ -379,7 +379,7 @@ Only 3 seconds needed. The encoder extracts a 192-dimensional embedding from mel
 
 ## Multi-Pass RAG-Enhanced TTS (The "Inkosei Optimizer")
 
-Because one pass is for amateurs, **Teerth** built a 6-pass compilation pipeline:
+Because one pass is for amateurs, **Seal** built a 6-pass compilation pipeline:
 
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#ff00ff', 'edgeLabelBackground':'#1a1a2e', 'tertiaryColor': '#00ffff'}}}%%
@@ -432,22 +432,22 @@ python multi_pass_tts.py --book ./book/novel.pdf --voice "MyClone"
 ## FAQ
 
 **Q: Why is this so complicated?**
-A: Because simple solutions don't get GitHub stars. Also **Teerth** was bored.
+A: Because simple solutions don't get GitHub stars. Also **Seal** was bored.
 
 **Q: Can I just use Coqui TTS instead?**
-A: Yes. You can also use a bicycle instead of a Ferrari. Both get you there. One is more fun. **Teerth** chose the Ferrari.
+A: Yes. You can also use a bicycle instead of a Ferrari. Both get you there. One is more fun. **Seal** chose the Ferrari.
 
 **Q: Will this run on my laptop?**
-A: If your laptop has an RTX 4060 or better, yes. If not, no. Buy a GPU or use the cloud configs. **Teerth** can't fix your hardware choices.
+A: If your laptop has an RTX 4060 or better, yes. If not, no. Buy a GPU or use the cloud configs. **Seal** can't fix your hardware choices.
 
 **Q: Why 600M parameters?**
-A: Because 200M sounded too reasonable and **Teerth** has a point to prove.
+A: Because 200M sounded too reasonable and **Seal** has a point to prove.
 
 **Q: Is this over-engineered?**
 A: The U-Net has self-attention at multiple levels, a 12-layer transformer processes audio frame-by-frame, we're using a pretrained TTS model to train two other models that enhance its output, and there's a 6-pass RAG pipeline. What do you think?
 
 **Q: How long did this take?**
-A: Longer than **Teerth** is willing to admit. Shorter than it would take you to reproduce it from scratch. That's the important part.
+A: Longer than **Seal** is willing to admit. Shorter than it would take you to reproduce it from scratch. That's the important part.
 
 ---
 

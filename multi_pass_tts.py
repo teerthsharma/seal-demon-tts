@@ -13,7 +13,7 @@ Pass 4: Cross-Segment Smoothing — Fix boundaries, consistent voice
 Pass 5: Faraday Enhancement — Book-specific mel restoration
 Pass 6: Aether Polish — Final waveform refinement with chapter-level style
 
-Author: Teerth Sharma — because one pass is for people who don't care.
+Author: Seal — because one pass is for people who don't care.
 """
 
 import argparse
