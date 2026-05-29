@@ -12,6 +12,7 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 def count_parameters(model: nn.Module) -> int:
@@ -313,7 +314,7 @@ class UNet(nn.Module):
         skips: List[torch.Tensor] = []
         for down, ds in zip(self.down_blocks, self.down_samples):
             if self.use_checkpoint and self.training:
-                x, skip = torch.utils.checkpoint.checkpoint(self._run_down, x, cond, down, ds, use_reentrant=False)
+                x, skip = checkpoint(self._run_down, x, cond, down, ds, use_reentrant=False)
             else:
                 x, skip = self._run_down(x, cond, down, ds)
             skips.append(skip)
@@ -321,7 +322,7 @@ class UNet(nn.Module):
         for layer in self.bottleneck:
             if isinstance(layer, ResBlock):
                 if self.use_checkpoint and self.training:
-                    x = torch.utils.checkpoint.checkpoint(layer, x, cond, use_reentrant=False)
+                    x = checkpoint(layer, x, cond, use_reentrant=False)
                 else:
                     x = layer(x, cond)
             else:
@@ -330,7 +331,7 @@ class UNet(nn.Module):
         for up in self.up_blocks:
             skip = skips.pop()
             if self.use_checkpoint and self.training:
-                x = torch.utils.checkpoint.checkpoint(self._run_up, x, skip, cond, up, use_reentrant=False)
+                x = checkpoint(self._run_up, x, skip, cond, up, use_reentrant=False)
             else:
                 x = self._run_up(x, skip, cond, up)
 

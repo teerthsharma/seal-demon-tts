@@ -61,10 +61,11 @@ def collate_fn(batch):
     }
 
 
-def train_epoch(model, loader, optimizer, device, grad_accum=1):
+def train_epoch(model, loader, optimizer, device, grad_accum=1, scaler=None):
     model.train()
     total_loss = 0.0
     optimizer.zero_grad()
+    use_amp = scaler is not None
     for step, batch in enumerate(tqdm(loader, desc="Train")):
         wav_in = batch["input_waveform"].to(device)
         wav_tgt = batch["target_waveform"].to(device)
@@ -73,13 +74,23 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1):
         f0 = batch["f0"].to(device)
         energy = batch["energy"].to(device)
 
-        _, loss = model(wav_in, mel, spk, f0, energy, target_waveform=wav_tgt)
+        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
+            _, loss = model(wav_in, mel, spk, f0, energy, target_waveform=wav_tgt)
         loss = loss / grad_accum
-        loss.backward()
+        if use_amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         if (step + 1) % grad_accum == 0 or (step + 1) == len(loader):
+            if use_amp:
+                scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             optimizer.zero_grad()
 
         total_loss += loss.item() * grad_accum
@@ -87,9 +98,10 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1):
 
 
 @torch.no_grad()
-def validate(model, loader, device):
+def validate(model, loader, device, scaler=None):
     model.eval()
     total_loss = 0.0
+    use_amp = scaler is not None
     for batch in loader:
         wav_in = batch["input_waveform"].to(device)
         wav_tgt = batch["target_waveform"].to(device)
@@ -98,7 +110,8 @@ def validate(model, loader, device):
         f0 = batch["f0"].to(device)
         energy = batch["energy"].to(device)
 
-        _, loss = model(wav_in, mel, spk, f0, energy, target_waveform=wav_tgt)
+        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
+            _, loss = model(wav_in, mel, spk, f0, energy, target_waveform=wav_tgt)
         total_loss += loss.item()
     return total_loss / len(loader)
 
@@ -118,7 +131,12 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(f"[AetherTrain] Device: {device}")
 
+    torch.set_float32_matmul_precision('high')
+
     model = AetherFilter(lr=args.lr).to(device)
+    # DISABLED: torch.compile causes TDR/thermal shutdown on RTX 4060 8GB
+    print("[AetherTrain] torch.compile DISABLED for stability. Using TF32 matmul.")
+
     total = sum(p.numel() for p in model.filter_net.parameters() if p.requires_grad)
     print(f"[AetherTrain] Params: {total:,}")
 
@@ -130,34 +148,46 @@ def main():
         generator=torch.Generator().manual_seed(42)
     )
 
+    num_workers = args.num_workers if args.num_workers > 0 else 28
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
+        num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=True,
+        persistent_workers=True if num_workers > 0 else False,
     )
     val_loader = DataLoader(
         val_set,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=True,
+        persistent_workers=True if num_workers > 0 else False,
     )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    try:
+        from bitsandbytes.optim import AdamW8bit
+        optimizer = AdamW8bit(model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=0.01)
+        print("[Optimizer] AdamW8bit (8-bit optimizer state)")
+    except ImportError:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=0.01)
+        print("[Optimizer] Standard AdamW")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    scaler = torch.amp.GradScaler(device='cuda') if device.type == "cuda" else None
 
     best_val = float("inf")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    import time
     for epoch in range(args.epochs):
         print(f"\n=== Epoch {epoch + 1}/{args.epochs} ===")
-        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum)
-        val_loss = validate(model, val_loader, device)
+        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum, scaler=scaler)
+        val_loss = validate(model, val_loader, device, scaler=scaler)
         scheduler.step()
 
         print(f"Train loss: {train_loss:.6f} | Val loss: {val_loss:.6f} | LR: {scheduler.get_last_lr()[0]:.2e}")
@@ -169,6 +199,12 @@ def main():
             print(f"Saved best checkpoint: {ckpt_path}")
 
         torch.save(model.state_dict(), output_dir / "last.pt")
+
+        # Thermal cooldown between epochs to prevent TDR
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+            time.sleep(5)
+            print("[Thermal] 5s cooldown complete")
 
     print("\n[AetherTrain] Done.")
 
