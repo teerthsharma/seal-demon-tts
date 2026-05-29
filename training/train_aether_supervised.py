@@ -126,6 +126,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num_workers", type=int, default=0, help="DataLoader workers (0=main thread, faster on Windows)")
+    parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -180,12 +181,25 @@ def main():
 
     scaler = torch.amp.GradScaler(device='cuda') if device.type == "cuda" else None
 
+    start_epoch = 0
+    if args.resume and Path(args.resume).exists():
+        print(f"[Resume] Loading checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device, weights_only=True)
+        model.load_state_dict(ckpt.get("model_state_dict", ckpt))
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+            print(f"[Resume] Resuming from epoch {start_epoch}")
+        if "scaler_state_dict" in ckpt and scaler is not None:
+            scaler.load_state_dict(ckpt["scaler_state_dict"])
+
     best_val = float("inf")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     import time
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"\n=== Epoch {epoch + 1}/{args.epochs} ===")
         train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum, scaler=scaler)
         val_loss = validate(model, val_loader, device, scaler=scaler)
@@ -199,7 +213,14 @@ def main():
             torch.save(model.state_dict(), ckpt_path)
             print(f"Saved best checkpoint: {ckpt_path}")
 
-        torch.save(model.state_dict(), output_dir / "last.pt")
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict() if scaler else None,
+            "val_loss": val_loss,
+        }, output_dir / "last.pt")
 
         # Thermal cooldown between epochs to prevent TDR
         if device.type == "cuda":
