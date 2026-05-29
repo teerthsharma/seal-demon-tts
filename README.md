@@ -4,7 +4,7 @@
 
 ## What This Actually Is (For People Who Actually Care)
 
-DemonTTS is an **850-million-parameter multi-physics inference engine** built by **Seal Sharma** that converts text into pressure waves via three neural networks that have no business being this complicated. But here we are.
+DemonTTS is an **850-million-parameter multi-physics inference engine** built by **Seal** that converts text into pressure waves via three neural networks that have no business being this complicated. But here we are.
 
 If you're reading this hoping for a quick `pip install coqui-tts` experience, close this tab now. Go touch grass. This project is what happens when **Seal** decides that *"good enough"* is for people who don't own an RTX 4060 and a dangerously large ego.
 
