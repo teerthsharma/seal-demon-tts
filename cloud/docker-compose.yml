@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  demon-tts-gpu:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - MODE=inference
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ../models:/workspace/demon-tts/models:ro
+      - ../voices.json:/workspace/demon-tts/voices.json:ro
+      - ../data:/data
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: ["python3", "-m", "cloud.inference_server", "--host", "0.0.0.0", "--port", "8000"]
+
+  demon-tts-train:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - MODE=train
+      - NUM_PAIRS=5000
+      - FARADAY_EPOCHS=100
+      - AETHER_EPOCHS=100
+    volumes:
+      - ../models:/data/models
+      - ../data:/data
+      - ../book:/data/book:ro
+      - ../checkpoints:/workspace/demon-tts/checkpoints
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles: ["train"]
+
+  demon-tts-batch:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - MODE=batch
+      - BOOK_DIR=/data/book
+      - OUTPUT_DIR=/data/audiobook
+    volumes:
+      - ../models:/workspace/demon-tts/models:ro
+      - ../voices.json:/workspace/demon-tts/voices.json:ro
+      - ../book:/data/book:ro
+      - ../audiobook:/data/audiobook
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: ["batch"]

@@ -56,7 +56,10 @@ class AetherFilter(nn.Module):
 
 if __name__ == "__main__":
     model = AetherFilter()
-    print(f"[AetherFilter] Params: {count_parameters(model.filter_net):,}")
+    total = count_parameters(model.filter_net)
+    print(f"[AetherFilter] Params: {total:,} (~{total/1e6:.1f}M)")
+    print(f"Target: ~100M")
+
     wav = torch.randn(1, 1, 24000)
     mel = torch.randn(1, 80, 100)
     spk = torch.randn(1, 192)
@@ -64,3 +67,6 @@ if __name__ == "__main__":
     energy = torch.randn(1, 1, 100)
     out, loss = model(wav, mel, spk, f0, energy, target_waveform=wav)
     print(f"Output shape: {out.shape}, loss: {loss.item():.4f}")
+
+    # Memory footprint
+    print(f"Estimated fp16 memory: {total * 2 / 1e6:.2f} MB")

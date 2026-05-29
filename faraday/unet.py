@@ -1,4 +1,4 @@
-"""Lightweight 2D U-Net for mel-spectrogram diffusion.
+"""Massive 2D U-Net for mel-spectrogram diffusion — 400M+ parameter variant.
 
 Input:  mel          [B, 1, 80, T]
         timestep     [B]
@@ -107,33 +107,53 @@ class ConvBlock(nn.Module):
         return x
 
 
+class ResBlock(nn.Module):
+    """Residual block: ConvBlock -> ConvBlock + skip."""
+
+    def __init__(self, ch: int, cond_dim: int):
+        super().__init__()
+        self.block1 = ConvBlock(ch, ch, cond_dim)
+        self.block2 = ConvBlock(ch, ch, cond_dim)
+        self.skip = nn.Identity()
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        h = self.block1(x, cond)
+        h = self.block2(h, cond)
+        return x + h
+
+
 class DownBlock(nn.Module):
-    """Two ConvBlocks + optional attention."""
+    """N ResBlocks + optional attention + downsample."""
 
     def __init__(
         self,
         in_ch: int,
         out_ch: int,
         cond_dim: int,
+        n_res: int = 2,
         use_attention: bool = False,
+        num_heads: int = 8,
     ):
         super().__init__()
-        self.block1 = ConvBlock(in_ch, out_ch, cond_dim)
-        self.block2 = ConvBlock(out_ch, out_ch, cond_dim)
-        self.attn = SelfAttention2D(out_ch) if use_attention else nn.Identity()
+        self.in_conv = ConvBlock(in_ch, out_ch, cond_dim)
+        self.res_blocks = nn.ModuleList([
+            ResBlock(out_ch, cond_dim) for _ in range(n_res)
+        ])
+        self.attn = SelfAttention2D(out_ch, num_heads) if use_attention else nn.Identity()
         self.downsample = nn.Conv2d(
             out_ch, out_ch, kernel_size=3, stride=2, padding=1, bias=False
         )
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        x = self.block1(x, cond)
-        x = self.block2(x, cond)
+        x = self.in_conv(x, cond)
+        for res in self.res_blocks:
+            x = res(x, cond)
         x = self.attn(x)
         return x
 
 
 class UpBlock(nn.Module):
-    """Upsample + two ConvBlocks."""
+    """Upsample + N ResBlocks + optional attention."""
 
     def __init__(
         self,
@@ -141,13 +161,17 @@ class UpBlock(nn.Module):
         skip_ch: int,
         out_ch: int,
         cond_dim: int,
+        n_res: int = 2,
         use_attention: bool = False,
+        num_heads: int = 8,
     ):
         super().__init__()
         self.upsample = nn.Upsample(scale_factor=2, mode="nearest")
-        self.block1 = ConvBlock(in_ch + skip_ch, out_ch, cond_dim)
-        self.block2 = ConvBlock(out_ch, out_ch, cond_dim)
-        self.attn = SelfAttention2D(out_ch) if use_attention else nn.Identity()
+        self.in_conv = ConvBlock(in_ch + skip_ch, out_ch, cond_dim)
+        self.res_blocks = nn.ModuleList([
+            ResBlock(out_ch, cond_dim) for _ in range(n_res)
+        ])
+        self.attn = SelfAttention2D(out_ch, num_heads) if use_attention else nn.Identity()
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         x = self.upsample(x)
@@ -157,41 +181,46 @@ class UpBlock(nn.Module):
                 x, size=skip.shape[2:], mode="nearest"
             )
         x = torch.cat([x, skip], dim=1)
-        x = self.block1(x, cond)
-        x = self.block2(x, cond)
+        x = self.in_conv(x, cond)
+        for res in self.res_blocks:
+            x = res(x, cond)
         x = self.attn(x)
         return x
 
 
 class UNet(nn.Module):
-    """Lightweight 2D U-Net for mel-spectrogram diffusion.
+    """Massive 2D U-Net for mel-spectrogram diffusion.
 
     Args:
         cond_dim: Dimension of the fused conditioning vector (time + text + speaker).
-        base_channels: Base channel width. Defaults to 64 for ~20M params.
+        base_channels: Base channel width. Defaults to 256 for ~400M params.
+        channel_mult: Channel multipliers per level.
+        n_res_blocks: Number of residual blocks per level.
+        attention_levels: Which levels get self-attention.
     """
 
-    def __init__(self, cond_dim: int = 128, base_channels: int = 64):
+    def __init__(
+        self,
+        cond_dim: int = 512,
+        base_channels: int = 256,
+        channel_mult: Tuple[int, ...] = (1, 2, 4, 8),
+        n_res_blocks: int = 3,
+        attention_levels: Tuple[int, ...] = (2, 3),
+    ):
         super().__init__()
         self.cond_dim = cond_dim
 
-        # Time embedding
+        # Time embedding — larger MLP for bigger model
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(cond_dim),
             nn.Linear(cond_dim, cond_dim * 4),
             nn.SiLU(),
+            nn.Linear(cond_dim * 4, cond_dim * 4),
+            nn.SiLU(),
             nn.Linear(cond_dim * 4, cond_dim),
         )
 
-        # Text / speaker projections (applied externally in model.py, but we
-        # accept a pre-fused cond vector here).
-
-        chs: List[int] = [
-            base_channels,
-            base_channels * 2,
-            base_channels * 4,
-            base_channels * 8,
-        ]
+        chs: List[int] = [base_channels * m for m in channel_mult]
 
         # Input
         self.input_conv = nn.Conv2d(1, chs[0], kernel_size=3, padding=1, bias=False)
@@ -200,19 +229,24 @@ class UNet(nn.Module):
         self.down_blocks = nn.ModuleList()
         self.down_samples = nn.ModuleList()
         for i, (in_ch, out_ch) in enumerate(zip([chs[0]] + chs[:-1], chs)):
-            use_attn = False  # attention only in bottleneck for memory
+            use_attn = i in attention_levels
+            heads = 16 if out_ch >= 1024 else 8
             self.down_blocks.append(
-                DownBlock(in_ch, out_ch, cond_dim, use_attention=use_attn)
+                DownBlock(in_ch, out_ch, cond_dim, n_res=n_res_blocks, use_attention=use_attn, num_heads=heads)
             )
             self.down_samples.append(
                 nn.Conv2d(out_ch, out_ch, 3, stride=2, padding=1, bias=False)
             )
 
-        # Bottleneck
+        # Bottleneck — deep with attention
         mid_ch = chs[-1]
-        self.bottleneck1 = ConvBlock(mid_ch, mid_ch, cond_dim)
-        self.bottleneck_attn = SelfAttention2D(mid_ch)
-        self.bottleneck2 = ConvBlock(mid_ch, mid_ch, cond_dim)
+        self.bottleneck = nn.ModuleList([
+            ResBlock(mid_ch, cond_dim),
+            SelfAttention2D(mid_ch, num_heads=16),
+            ResBlock(mid_ch, cond_dim),
+            SelfAttention2D(mid_ch, num_heads=16),
+            ResBlock(mid_ch, cond_dim),
+        ])
 
         # Decoder
         self.up_blocks = nn.ModuleList()
@@ -220,9 +254,11 @@ class UNet(nn.Module):
         for i, (in_ch, skip_ch, out_ch) in enumerate(
             zip(rev_chs, rev_chs, rev_chs[1:] + [chs[0]])
         ):
-            use_attn = False
+            level_idx = len(chs) - 1 - i
+            use_attn = level_idx in attention_levels
+            heads = 16 if in_ch >= 1024 else 8
             self.up_blocks.append(
-                UpBlock(in_ch, skip_ch, out_ch, cond_dim, use_attention=use_attn)
+                UpBlock(in_ch, skip_ch, out_ch, cond_dim, n_res=n_res_blocks, use_attention=use_attn, num_heads=heads)
             )
 
         # Output
@@ -256,9 +292,11 @@ class UNet(nn.Module):
             skips.append(x)
             x = ds(x)
 
-        x = self.bottleneck1(x, cond)
-        x = self.bottleneck_attn(x)
-        x = self.bottleneck2(x, cond)
+        for layer in self.bottleneck:
+            if isinstance(layer, ResBlock):
+                x = layer(x, cond)
+            else:
+                x = layer(x)
 
         for up in self.up_blocks:
             skip = skips.pop()

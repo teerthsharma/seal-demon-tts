@@ -12,15 +12,15 @@ from .unet import UNet, count_parameters
 class FaradayDiffusion(nn.Module):
     """Mel-spectrogram diffusion enhancer.
 
-    Holds a lightweight 2D U-Net and a DDPM/DDIM scheduler.
+    Holds a 400M-parameter 2D U-Net and a DDPM/DDIM scheduler.
     """
 
     def __init__(
         self,
         text_dim: int = 512,
         speaker_dim: int = 256,
-        cond_dim: int = 128,
-        base_channels: int = 64,
+        cond_dim: int = 512,
+        base_channels: int = 256,
         num_steps: int = 1000,
     ):
         super().__init__()
@@ -224,14 +224,14 @@ if __name__ == "__main__":
     model = FaradayDiffusion(
         text_dim=512,
         speaker_dim=256,
-        cond_dim=128,
-        base_channels=64,
+        cond_dim=512,
+        base_channels=256,
         num_steps=1000,
     ).to(device)
 
     total = count_parameters(model)
     print(f"Total parameters: {total:,}")
-    print(f"Target: ~20M")
+    print(f"Target: ~400M")
 
     B = 1
     T = 256
