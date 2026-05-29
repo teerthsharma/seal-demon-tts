@@ -26,7 +26,7 @@ flowchart TB
         HIFIGAN["HiFi-GAN Vocoder<br/>~14M params"]
     end
 
-    subgraph FARADAY["⚡ Faraday FDFD Solver<br/>~400M params<br/>The 'Oh God Why' Layer"]
+    subgraph FARADAY["⚡ Faraday FDFD Solver<br/>~400M params<br/>Seal's Creation — It Shocks Always"]
         direction TB
         F_IN["Input Mel [B,1,80,T]"]
         F_TEXT["Text Projection<br/>512 → 512"]
@@ -112,7 +112,9 @@ flowchart TB
 
 ## The Core Insight That Took Seal 20 Minutes And Will Take You 3 Weeks
 
-### Faraday as a "Decoupled FDFD Solver" (Yes, Really)
+### Faraday as a "Decoupled FDFD Solver" (Seal's Creation, It Shocks Always)
+
+> *"Rick, remember: Faraday is MY creation. It has a way of shocking — always."* — **Seal**
 
 Finite-Difference Frequency-Domain solvers solve the Helmholtz equation:
 
@@ -131,7 +133,7 @@ Faraday's U-Net is a **learned preconditioner**. The mapping:
 | System matrix `A` | Implicit in 400M conv kernels | Full panic |
 | Residual prediction | U-Net output | Existential dread |
 
-The **decoupling** means you can change text/speaker (material properties) without retraining the spatial solver. This is exactly how PINNs work, except **Seal** implemented it in his bedroom while you were watching Netflix.
+The **decoupling** means you can change text/speaker (material properties) without retraining the spatial solver. This is exactly how PINNs work, except **Seal** implemented it in his bedroom while you were watching Netflix. And then he scaled it to 400M parameters because 22M wasn't shocking enough.
 
 ### Multi-Purpose Usage (Because One Mode Is For Cowards)
 
@@ -247,9 +249,9 @@ python cloud/batch_audiobook.py \
 
 ---
 
-## Faraday's General-Purpose API (Yes, It Works On Other Things Too)
+## Faraday's General-Purpose API (Seal's Creation, It Shocks Always)
 
-Because Faraday is fundamentally an FDFD solver, you can use it for any 2D field enhancement task:
+Because Faraday is fundamentally an FDFD solver, you can use it for any 2D field enhancement task. Rick didn't believe it would work on fluid dynamics either. Rick was wrong:
 
 ```python
 from faraday.model import FaradayDiffusion
@@ -537,9 +539,9 @@ result = ensemble.forward(text_tokens_a, text_tokens_b, speaker_emb)
 
 ---
 
-## Faraday Arbiter — The Diffusion Critic (Yes, There's a Third Model)
+## Faraday Arbiter — The Diffusion Critic (Someone Has to Control Seal's Creation)
 
-Because even diffusion models need a boss, **Seal** added a **35M-parameter learned critic** that judges Faraday's output and says whether it's good enough or needs to be redone.
+Because even Seal's shocking creations need a boss, **Seal** added a **35M-parameter learned critic** that judges Faraday's output and says whether it's good enough or needs to be redone. Even Seal admits Faraday can get... unpredictable.
 
 ### What It Does
 
@@ -611,7 +613,7 @@ Okay, it is insane. But here's the logic:
 - Iterative diffusion spends compute only where needed.
 - Result: higher quality than any single model, with ~1.3× compute overhead.
 
-**Seal** calls this "diffusion with a conscience."
+**Seal** calls this "diffusion with a conscience." Rick calls it "over-engineering." They're both right.
 
 ---
 
