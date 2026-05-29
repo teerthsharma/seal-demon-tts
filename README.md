@@ -329,17 +329,17 @@ robust_waveform = bridge.process_batch(
 )
 ```
 
-### Aether Quantum Filter (The Full Integration)
+### Aether Wave Filter (The Full Integration)
 
-For production, use the `AetherQuantumFilter` which wraps the entire Aether pipeline with EPSILON-PHASE:
+For production, use the `AetherWaveFilter` which wraps the entire Aether pipeline with EPSILON-PHASE:
 
 ```python
-from aether_quantum_filter import AetherQuantumFilter
+from aether_wave_filter import AetherWaveFilter
 
-quantum_filter = AetherQuantumFilter()
+wave_filter = AetherWaveFilter()
 
 # Forward pass: FilterNet → Lattice → EPSILON-PHASE → Loss
-robust_waveform, loss = quantum_filter(
+robust_waveform, loss = wave_filter(
     waveform=input_wav,      # [B, 1, T]
     mel=mel_spec,            # [B, 80, T_mel]
     speaker_emb=spk_emb,     # [B, 192]
@@ -590,7 +590,7 @@ Aether uses a **12-layer transformer** (not an LSTM — LSTMs are for 2017) to p
 
 ```python
 from aether.model import AetherFilter
-from aether_quantum_filter import AetherQuantumFilter
+from aether_wave_filter import AetherWaveFilter
 
 # Standard Aether
 filter_net = AetherFilter()
@@ -602,9 +602,9 @@ refined_waveform = filter_net(
     energy=energy,          # [B, 1, T_mel] — energy contour
 )
 
-# Quantum Aether (with EPSILON-PHASE)
-quantum = AetherQuantumFilter()
-robust_waveform, loss = quantum(
+# Wave Aether (with EPSILON-PHASE)
+wave = AetherWaveFilter()
+robust_waveform, loss = wave(
     waveform=wav, mel=mel, speaker_emb=spk, f0=f0, energy=energy, target=target_wav
 )
 ```
@@ -1005,7 +1005,7 @@ DemonTTS is the only system with:
 ./topology/          # Persistent homology for mel spectrograms (the math demon)
 ./gui.py             # CustomTkinter audiobook factory (for the lazy)
 ./epsilon_phase_bridge.py      # PyTorch ↔ EPSILON-PHASE bridge
-./aether_quantum_filter.py     # Aether + EPSILON-PHASE integration
+./aether_wave_filter.py     # Aether + EPSILON-PHASE integration
 ./ouroboros_trainer.py         # Self-improving training loop (the snake)
 ./generate_ouroboros_data.py   # Generate data from trained model
 ./generate_audiobook.py        # Batch audiobook generator

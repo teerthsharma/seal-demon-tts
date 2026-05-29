@@ -21,6 +21,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from faraday.model import FaradayDiffusion
+from topology.barcode_loss import TopologicalLoss
 
 
 class MelPairDataset(Dataset):
@@ -53,7 +54,7 @@ def collate_fn(batch):
     }
 
 
-def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_dir=None, scaler=None):
+def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_dir=None, scaler=None, topo_loss_fn=None):
     model.train()
     total_loss = 0.0
     optimizer.zero_grad()
@@ -67,7 +68,11 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_
 
         try:
             with torch.amp.autocast(device_type='cuda', enabled=use_amp):
-                loss = model.supervised_training_loss(student_mel, gt_mel, text_emb, speaker_emb)
+                if topo_loss_fn is not None:
+                    pred_mel = model.supervised_enhance(student_mel, text_emb, speaker_emb)
+                    loss = topo_loss_fn(pred_mel, gt_mel)
+                else:
+                    loss = model.supervised_training_loss(student_mel, gt_mel, text_emb, speaker_emb)
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
                 torch.cuda.empty_cache()
@@ -133,10 +138,10 @@ def main():
     parser.add_argument("--output_dir", default="./checkpoints/faraday")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--grad_accum", type=int, default=8, help="Gradient accumulation steps")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100, help="Training epochs (destiny threshold: 100)")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader workers (0=main thread, faster on Windows)")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -144,6 +149,7 @@ def main():
 
     # Speed settings: TF32 for faster matmul on Ada/Ampere
     torch.set_float32_matmul_precision('high')
+    torch.backends.cudnn.benchmark = True
 
     model = FaradayDiffusion(
         text_dim=512,
@@ -173,16 +179,15 @@ def main():
         generator=torch.Generator().manual_seed(42)
     )
 
-    # Use all CPU cores for data loading
-    num_workers = args.num_workers if args.num_workers > 0 else 28
+    num_workers = args.num_workers
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
-        persistent_workers=True if num_workers > 0 else False,
+        pin_memory=device.type == "cuda",
+        persistent_workers=False,
     )
     val_loader = DataLoader(
         val_set,
@@ -190,8 +195,8 @@ def main():
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
-        persistent_workers=True if num_workers > 0 else False,
+        pin_memory=device.type == "cuda",
+        persistent_workers=False,
     )
 
     # Use 8-bit AdamW to fit 400M params in 8GB VRAM (saves ~2.4GB optimizer state)
@@ -214,7 +219,7 @@ def main():
     import time
     for epoch in range(args.epochs):
         print(f"\n=== Epoch {epoch + 1}/{args.epochs} ===")
-        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum, epoch=epoch, output_dir=args.output_dir, scaler=scaler)
+        train_loss = train_epoch(model, train_loader, optimizer, device, grad_accum=args.grad_accum, epoch=epoch, output_dir=args.output_dir, scaler=scaler, topo_loss_fn=topo_loss_fn)
         val_loss = validate(model, val_loader, device, scaler=scaler)
         scheduler.step()
 

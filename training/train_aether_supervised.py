@@ -122,16 +122,17 @@ def main():
     parser.add_argument("--output_dir", default="./checkpoints/aether")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation steps")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100, help="Training epochs (destiny threshold: 100)")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader workers (0=main thread, faster on Windows)")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(f"[AetherTrain] Device: {device}")
 
     torch.set_float32_matmul_precision('high')
+    torch.backends.cudnn.benchmark = True
 
     model = AetherFilter(lr=args.lr).to(device)
     # DISABLED: torch.compile causes TDR/thermal shutdown on RTX 4060 8GB
@@ -148,15 +149,15 @@ def main():
         generator=torch.Generator().manual_seed(42)
     )
 
-    num_workers = args.num_workers if args.num_workers > 0 else 28
+    num_workers = args.num_workers
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
-        persistent_workers=True if num_workers > 0 else False,
+        pin_memory=device.type == "cuda",
+        persistent_workers=False,
     )
     val_loader = DataLoader(
         val_set,
@@ -164,8 +165,8 @@ def main():
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
-        persistent_workers=True if num_workers > 0 else False,
+        pin_memory=device.type == "cuda",
+        persistent_workers=False,
     )
 
     try:

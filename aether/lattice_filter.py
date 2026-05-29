@@ -171,18 +171,17 @@ class ParallelSOSFilterBank(nn.Module):
 
         if T > 1:
             # Sample 1: y[1] = fir[1] - a1*y[0]
-            y[:, :, 1] = fir[:, :, 1] - a1.view(1, C, 1) * y[:, :, 0:1]
+            y[:, :, 1] = fir[:, :, 1] - a1.view(1, C) * y[:, :, 0]
 
         # Remaining samples: vectorized loop
-        # We process in chunks to balance speed and memory
         chunk_size = min(512, T)
         for start in range(2, T, chunk_size):
             end = min(start + chunk_size, T)
             for t in range(start, end):
                 y[:, :, t] = (
                     fir[:, :, t]
-                    - a1.view(1, C, 1) * y[:, :, t-1]
-                    - a2.view(1, C, 1) * y[:, :, t-2]
+                    - a1.view(1, C) * y[:, :, t-1]
+                    - a2.view(1, C) * y[:, :, t-2]
                 )
 
         return y

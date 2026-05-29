@@ -10,3 +10,4 @@ data/
 *.wav
 *.mp3
 .ipynb_checkpoints/
+*.log
