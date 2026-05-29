@@ -53,17 +53,26 @@ def collate_fn(batch):
     }
 
 
-def train_epoch(model, loader, optimizer, device, grad_accum=1):
+def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_dir=None):
     model.train()
     total_loss = 0.0
     optimizer.zero_grad()
+    step_losses = []
     for step, batch in enumerate(tqdm(loader, desc="Train")):
         student_mel = batch["student_mel"].to(device)
         gt_mel = batch["gt_mel"].to(device)
         text_emb = batch["text_emb"].to(device)
         speaker_emb = batch["speaker_emb"].to(device)
 
-        loss = model.supervised_training_loss(student_mel, gt_mel, text_emb, speaker_emb)
+        try:
+            loss = model.supervised_training_loss(student_mel, gt_mel, text_emb, speaker_emb)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                torch.cuda.empty_cache()
+                print(f"\n[OOM] Step {step}, skipping batch. Error: {e}")
+                continue
+            raise
+
         loss = loss / grad_accum
         loss.backward()
 
@@ -73,6 +82,19 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1):
             optimizer.zero_grad()
 
         total_loss += loss.item() * grad_accum
+        step_losses.append(loss.item() * grad_accum)
+
+        # Save checkpoint every 100 steps during epoch (crash protection)
+        if output_dir and step > 0 and step % 100 == 0:
+            ckpt_path = Path(output_dir) / f"epoch{epoch}_step{step}_emergency.pt"
+            torch.save({
+                "epoch": epoch,
+                "step": step,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "loss": loss.item(),
+            }, ckpt_path)
+
     return total_loss / len(loader)
 
 
@@ -108,13 +130,15 @@ def main():
 
     model = FaradayDiffusion(
         text_dim=512,
-        speaker_dim=512,
-        cond_dim=128,
-        base_channels=64,
+        speaker_dim=256,
+        cond_dim=512,
+        base_channels=256,
     ).to(device)
+    # Enable gradient checkpointing on U-Net for 8GB VRAM survival
+    model.unet.use_checkpoint = True
 
     total = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[FaradayTrain] Params: {total:,}")
+    print(f"[FaradayTrain] Params: {total:,} (~{total/1e6:.0f}M)")
 
     ds = MelPairDataset(args.data_dir)
     train_size = int(0.9 * len(ds))

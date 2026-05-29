@@ -403,8 +403,9 @@ class CachedTTS:
         if cached is not None:
             mel, confidence = cached
             # Convert mel to waveform using base vocoder
-            # This is still needed, but mel→wave is much faster than text→mel
-            wav = self.base_tts.vocoder(mel.to(self.base_tts.device))
+            # Vocoder expects [T, 80], mel is [1, 80, T] — transpose and squeeze
+            mel_t = mel.squeeze(0).T.to(self.base_tts.device)  # [T, 80]
+            wav = self.base_tts.vocoder(mel_t)
             return wav.squeeze().cpu().numpy()
 
         # Cache miss — full synthesis

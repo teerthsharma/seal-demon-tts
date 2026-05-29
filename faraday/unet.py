@@ -54,7 +54,7 @@ class FiLM(nn.Module):
 
 class SelfAttention2D(nn.Module):
     """Multi-head self-attention for 2D feature maps.
-    Operates on flattened spatial dimensions.
+    Uses memory-efficient attention to avoid OOM on large spatial dims.
     """
 
     def __init__(self, channels: int, num_heads: int = 8):
@@ -79,12 +79,24 @@ class SelfAttention2D(nn.Module):
         k = k.view(B, self.num_heads, self.head_dim, H * W).transpose(2, 3)
         v = v.view(B, self.num_heads, self.head_dim, H * W).transpose(2, 3)
 
-        # Scaled dot-product attention
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-        attn = F.softmax(attn, dim=-1)
-        out = torch.matmul(attn, v)  # [B, heads, HW, head_dim]
+        # Memory-efficient attention: compute in chunks to avoid materializing full attn matrix
+        # This uses the fact that softmax(q @ k.T) @ v can be computed sequentially
+        if H * W > 4096 and self.num_heads >= 8:
+            # Use torch.nn.functional.scaled_dot_product_attention if available (PyTorch 2.0+)
+            # It uses FlashAttention under the hood
+            q = q.transpose(1, 2).contiguous().view(B, H * W, self.num_heads, self.head_dim)
+            k = k.transpose(1, 2).contiguous().view(B, H * W, self.num_heads, self.head_dim)
+            v = v.transpose(1, 2).contiguous().view(B, H * W, self.num_heads, self.head_dim)
+            out = F.scaled_dot_product_attention(q, k, v, scale=self.scale)
+            out = out.view(B, H * W, self.num_heads, self.head_dim).transpose(1, 2)
+            out = out.contiguous().view(B, C, H, W)
+        else:
+            # Standard attention for smaller spatial dims
+            attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+            attn = F.softmax(attn, dim=-1)
+            out = torch.matmul(attn, v)
+            out = out.transpose(2, 3).contiguous().view(B, C, H, W)
 
-        out = out.transpose(2, 3).contiguous().view(B, C, H, W)
         out = self.proj(out)
         return x + out
 
@@ -197,6 +209,7 @@ class UNet(nn.Module):
         channel_mult: Channel multipliers per level.
         n_res_blocks: Number of residual blocks per level.
         attention_levels: Which levels get self-attention.
+        use_checkpoint: Enable gradient checkpointing for training memory savings.
     """
 
     def __init__(
@@ -205,10 +218,12 @@ class UNet(nn.Module):
         base_channels: int = 256,
         channel_mult: Tuple[int, ...] = (1, 2, 4, 8),
         n_res_blocks: int = 3,
-        attention_levels: Tuple[int, ...] = (2, 3),
+        attention_levels: Tuple[int, ...] = (2,),  # NOTE: level 3 has 2048ch, attention OOMs on 8GB
+        use_checkpoint: bool = False,
     ):
         super().__init__()
         self.cond_dim = cond_dim
+        self.use_checkpoint = use_checkpoint
 
         # Time embedding — larger MLP for bigger model
         self.time_mlp = nn.Sequential(
@@ -264,6 +279,15 @@ class UNet(nn.Module):
         # Output
         self.output_conv = nn.Conv2d(chs[0], 1, kernel_size=3, padding=1, bias=False)
 
+    def _run_down(self, x, cond, down, ds):
+        x = down(x, cond)
+        skip = x
+        x = ds(x)
+        return x, skip
+
+    def _run_up(self, x, skip, cond, up):
+        return up(x, skip, cond)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -288,19 +312,27 @@ class UNet(nn.Module):
 
         skips: List[torch.Tensor] = []
         for down, ds in zip(self.down_blocks, self.down_samples):
-            x = down(x, cond)
-            skips.append(x)
-            x = ds(x)
+            if self.use_checkpoint and self.training:
+                x, skip = torch.utils.checkpoint.checkpoint(self._run_down, x, cond, down, ds, use_reentrant=False)
+            else:
+                x, skip = self._run_down(x, cond, down, ds)
+            skips.append(skip)
 
         for layer in self.bottleneck:
             if isinstance(layer, ResBlock):
-                x = layer(x, cond)
+                if self.use_checkpoint and self.training:
+                    x = torch.utils.checkpoint.checkpoint(layer, x, cond, use_reentrant=False)
+                else:
+                    x = layer(x, cond)
             else:
                 x = layer(x)
 
         for up in self.up_blocks:
             skip = skips.pop()
-            x = up(x, skip, cond)
+            if self.use_checkpoint and self.training:
+                x = torch.utils.checkpoint.checkpoint(self._run_up, x, skip, cond, up, use_reentrant=False)
+            else:
+                x = self._run_up(x, skip, cond, up)
 
         x = self.output_conv(x)
         return x

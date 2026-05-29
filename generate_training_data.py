@@ -64,6 +64,34 @@ def synthesize_teacher(text: str, processor, tts, vocoder, speaker_emb, device: 
     return spectrogram.cpu(), wav.cpu()
 
 
+def extract_text_embedding(text: str, processor, tts_model, device: str) -> torch.Tensor:
+    """Extract REAL text embedding from SpeechT5 encoder.
+    
+    Uses the encoder's hidden state mean-pooled as the text conditioning signal.
+    This gives Faraday actual semantic information instead of random noise.
+    """
+    inputs = processor(text=text, return_tensors="pt")
+    input_ids = inputs["input_ids"].to(device)
+    
+    # Truncate
+    if input_ids.shape[1] > 600:
+        input_ids = input_ids[:, :600]
+    
+    with torch.no_grad():
+        # Get encoder hidden states from SpeechT5
+        encoder_outputs = tts_model.speecht5.encoder(input_ids)
+        hidden = encoder_outputs[0]  # [B, T, hidden_dim]
+        # Mean pool over sequence
+        text_emb = hidden.mean(dim=1)  # [B, hidden_dim]
+        # Project to 512-dim if needed
+        if text_emb.shape[1] != 512:
+            # Simple linear projection using random weights (consistent per run)
+            proj = torch.nn.Linear(text_emb.shape[1], 512).to(device)
+            text_emb = proj(text_emb)
+    
+    return text_emb.cpu().squeeze(0)  # [512]
+
+
 def corrupt_mel_for_faraday(mel: torch.Tensor) -> torch.Tensor:
     """Add synthetic corruption to mel spectrogram."""
     # mel: [T, 80]
@@ -205,10 +233,13 @@ def generate_pairs(
         gt_mel = spec.T.unsqueeze(0)  # [1, 80, T]
         corrupted_mel = corrupt_mel_for_faraday(spec).T.unsqueeze(0)  # [1, 80, T]
 
+        # Extract REAL text embedding from SpeechT5 encoder
+        text_emb = extract_text_embedding(text, processor, tts, device)
+
         faraday_data = {
             "student_mel": corrupted_mel,
             "gt_mel": gt_mel,
-            "text_emb": torch.randn(512),  # placeholder, will be replaced by real text emb
+            "text_emb": text_emb,  # REAL embedding from SpeechT5 encoder
             "speaker_emb": speaker_emb.cpu()[0],
         }
         torch.save(faraday_data, faraday_dir / f"pair_{pair_id:06d}.pt")

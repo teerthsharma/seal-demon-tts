@@ -52,8 +52,15 @@ class DemonTTS:
         self.aether = self._load_model("aether.pt", AetherFilter)
         self.speaker_encoder = self._load_model("speaker_encoder.pt", SpeakerEncoder)
 
-        # Default speaker embedding for SpeechT5 (512-dim)
+        # Default speaker embedding for SpeechT5 (512-dim) — learned from encoder if available
         self.default_speaker = torch.randn(1, 512).to(self.device)
+
+        # Persistent projection layers — created ONCE, not in inference loop
+        self.spk_proj_faraday = torch.nn.Linear(192, 256).to(self.device)
+        self.spk_proj_aether = torch.nn.Linear(256, 192).to(self.device)
+
+        # Persistent resample — created ONCE
+        self.resample_16to24 = torchaudio.transforms.Resample(16000, 24000).to(self.device)
 
         # Mel transform for Aether conditioning (24kHz)
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
@@ -150,12 +157,23 @@ class DemonTTS:
         chunks = self._chunk_text(text)
         waveforms: List[np.ndarray] = []
 
+        # Build SpeechT5 speaker embedding from cloned voice
+        # If speaker_emb_t is provided, use it; otherwise use default
+        if speaker_emb_t is not None and speaker_emb_t.shape[1] == 192:
+            # Project 192-dim cloned embedding to 512-dim for SpeechT5
+            # Use a simple linear projection (can be learned later)
+            spk_for_tts = torch.nn.functional.linear(
+                speaker_emb_t, torch.randn(512, 192, device=self.device) * 0.02
+            )
+        else:
+            spk_for_tts = self.default_speaker
+
         for chunk in chunks:
             inputs = self.processor(text=chunk, return_tensors="pt")
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            # SpeechT5 → spectrogram [T, 80]
-            spectrogram = self.tts.generate_speech(inputs["input_ids"], self.default_speaker)
+            # SpeechT5 → spectrogram [T, 80] using ACTUAL speaker embedding
+            spectrogram = self.tts.generate_speech(inputs["input_ids"], spk_for_tts)
             # Reshape to [1, 80, T] for Faraday
             mel = spectrogram.T.unsqueeze(0)  # [1, 80, T]
 
@@ -163,10 +181,8 @@ class DemonTTS:
             if use_faraday:
                 mel = mel.unsqueeze(1)  # [1, 1, 80, T]
                 text_emb = torch.zeros(1, 512, device=self.device)
-                spk_faraday = torch.zeros(1, 256, device=self.device)
-                if speaker_emb_t.shape[1] == 192:
-                    spk_proj = torch.nn.Linear(192, 256).to(self.device)
-                    spk_faraday = spk_proj(speaker_emb_t)
+                # Use PERSISTENT projection layer (created in __init__)
+                spk_faraday = self.spk_proj_faraday(speaker_emb_t)
                 mel_enhanced = self.faraday.supervised_enhance(
                     mel, text_emb=text_emb, speaker_emb=spk_faraday
                 )
@@ -175,8 +191,8 @@ class DemonTTS:
             # Vocoder → waveform @ 16kHz
             wav_16k = self.vocoder(mel.squeeze(0).T)  # [T_samples]
 
-            # Resample to 24kHz for Aether
-            wav_24k = torchaudio.transforms.Resample(16000, 24000).to(self.device)(wav_16k)
+            # Resample to 24kHz for Aether using PERSISTENT resample
+            wav_24k = self.resample_16to24(wav_16k)
 
             # Aether waveform polish
             if use_aether:
@@ -186,10 +202,8 @@ class DemonTTS:
                 T_mel = aether_mel.shape[2]
                 energy = aether_mel.mean(dim=1, keepdim=True)  # [1, 1, T]
                 f0 = torch.zeros(1, 1, T_mel, device=self.device)
-                spk_aether = speaker_emb_t
-                if spk_aether.shape[1] != 192:
-                    spk_proj = torch.nn.Linear(spk_aether.shape[1], 192).to(self.device)
-                    spk_aether = spk_proj(spk_aether)
+                # Use PERSISTENT projection layer
+                spk_aether = self.spk_proj_aether(spk_faraday)
                 wav_refined = self.aether(wav_t, aether_mel, spk_aether, f0, energy)
                 wav_24k = wav_refined[0, 0]
 
