@@ -1,25 +1,39 @@
-torch==2.5.1+cu121
-torchaudio==2.5.1+cu121
---index-url https://download.pytorch.org/whl/cu121
+# DemonTTS Core Dependencies
+# Install with: pip install -r requirements.txt
+
+torch>=2.5.0
+torchaudio>=2.5.0
 transformers>=4.40.0
 tokenizers>=0.19.0
 accelerate>=0.30.0
+
+# Audio
 soundfile>=0.12.1
 librosa>=0.10.1
 numpy<2.0.0
 scipy>=1.11.0
 pydub>=0.25.1
-pygame>=2.5.0
+
+# GUI
 customtkinter>=5.2.0
+pygame>=2.5.0
+
+# PDF parsing
 pypdf>=4.0.0
 pdfplumber>=0.11.0
+
+# Training / utilities
 tqdm>=4.66.0
 wandb>=0.17.0
 tensorboard>=2.16.0
 huggingface-hub>=0.23.0
 safetensors>=0.4.3
+
+# Export
 onnx>=1.16.0
 onnxruntime-gpu>=1.18.0
-fastapi>=0.111.0
-uvicorn[standard]>=0.30.0
-python-multipart>=0.0.9
+
+# Optional (for legacy trainers and evaluation)
+# lightning>=2.3.0
+# resemblyzer>=0.1.1
+# TTS>=0.22.0

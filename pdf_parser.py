@@ -1,5 +1,6 @@
 """PDF → structured text pipeline with caching."""
 
+import argparse
 import hashlib
 import json
 import re
@@ -161,10 +162,50 @@ class PDFParser:
 
         return all_chapters
 
+    def parse_pdf(self, path: str) -> Dict[str, List[Dict]]:
+        """Parse one PDF into the chapter shape used by multi_pass_tts."""
+        pdf = Path(path)
+        if not pdf.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf}")
+        if pdf.suffix.lower() != ".pdf":
+            raise ValueError(f"Expected a PDF file, got: {pdf}")
+
+        key = f"{pdf.stem}_{self._file_hash(str(pdf))}"
+        cached = self._load_cache(key)
+        if cached is None:
+            print(f"[PDFParser] Parsing: {pdf.name}")
+            text = self.extract_text(str(pdf))
+            cached = self.split_chapters(text)
+            for ch_data in cached.values():
+                ch_data["speakers"] = self.detect_speakers(ch_data["text"])
+                ch_data["source_pdf"] = pdf.name
+            self._save_cache(key, cached)
+        else:
+            print(f"[PDFParser] Cache hit: {pdf.name}")
+
+        return {"chapters": list(cached.values())}
+
 
 def main():
-    parser = PDFParser()
-    result = parser.parse_folder("./book")
+    arg_parser = argparse.ArgumentParser(description="Parse PDFs into cached chapter JSON")
+    arg_parser.add_argument("--input", default="./book", help="Input PDF file or folder")
+    arg_parser.add_argument(
+        "--output",
+        default="./book_parsed",
+        help="Directory for parsed JSON cache files",
+    )
+    args = arg_parser.parse_args()
+
+    parser = PDFParser(cache_dir=args.output)
+    input_path = Path(args.input)
+    if input_path.is_file():
+        parsed = parser.parse_pdf(str(input_path))
+        result = {
+            chapter.get("title", f"Chapter {i + 1}"): chapter
+            for i, chapter in enumerate(parsed["chapters"])
+        }
+    else:
+        result = parser.parse_folder(str(input_path))
     print(f"Parsed {len(result)} chapters")
     for k in list(result.keys())[:5]:
         print(f"  - {k}: {len(result[k]['text'])} chars")

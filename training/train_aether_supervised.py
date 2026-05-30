@@ -12,6 +12,8 @@ Expects data in ./data/aether_pairs/*.pt with keys:
 """
 
 import argparse
+import gc
+import os
 import sys
 from pathlib import Path
 
@@ -74,7 +76,7 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1, scaler=None):
         f0 = batch["f0"].to(device)
         energy = batch["energy"].to(device)
 
-        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             _, loss = model(wav_in, mel, spk, f0, energy, target_waveform=wav_tgt)
         loss = loss / grad_accum
         if use_amp:
@@ -94,6 +96,9 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1, scaler=None):
             optimizer.zero_grad()
 
         total_loss += loss.item() * grad_accum
+
+        # Free large tensors to prevent reference-cycle accumulation
+        del wav_in, wav_tgt, mel, spk, f0, energy, loss
     return total_loss / len(loader)
 
 
@@ -110,7 +115,7 @@ def validate(model, loader, device, scaler=None):
         f0 = batch["f0"].to(device)
         energy = batch["energy"].to(device)
 
-        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             _, loss = model(wav_in, mel, spk, f0, energy, target_waveform=wav_tgt)
         total_loss += loss.item()
     return total_loss / len(loader)
@@ -133,7 +138,9 @@ def main():
     print(f"[AetherTrain] Device: {device}")
 
     torch.set_float32_matmul_precision('high')
-    torch.backends.cudnn.benchmark = True
+    # DISABLED: cudnn.benchmark=True causes severe memory fragmentation
+    # with variable-length waveform batches, leading to OOM after several epochs.
+    torch.backends.cudnn.benchmark = False
 
     model = AetherFilter(lr=args.lr).to(device)
     # DISABLED: torch.compile causes TDR/thermal shutdown on RTX 4060 8GB
@@ -191,6 +198,9 @@ def main():
         if "epoch" in ckpt:
             start_epoch = ckpt["epoch"] + 1
             print(f"[Resume] Resuming from epoch {start_epoch}")
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            print(f"[Resume] Restored scheduler state")
         if "scaler_state_dict" in ckpt and scaler is not None:
             scaler.load_state_dict(ckpt["scaler_state_dict"])
 
@@ -222,13 +232,18 @@ def main():
             "val_loss": val_loss,
         }, output_dir / "last.pt")
 
-        # Thermal cooldown between epochs to prevent TDR
+        # Thermal cooldown + memory defrag between epochs
         if device.type == "cuda":
             torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
             time.sleep(5)
-            print("[Thermal] 5s cooldown complete")
+            print("[Thermal] 5s cooldown + cache flush complete")
 
     print("\n[AetherTrain] Done.")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

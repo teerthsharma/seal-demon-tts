@@ -74,7 +74,15 @@ class DemonTTS:
 
     def _load_model(self, filename: str, cls):
         path = self.model_dir / filename
-        model = cls().to(self.device)
+        if cls is FaradayDiffusion:
+            model = cls(
+                text_dim=512,
+                speaker_dim=512,
+                cond_dim=512,
+                base_channels=192,
+            ).to(self.device)
+        else:
+            model = cls().to(self.device)
         if path.exists():
             try:
                 state = torch.load(path, map_location=self.device, weights_only=True)
@@ -160,15 +168,13 @@ class DemonTTS:
         waveforms: List[np.ndarray] = []
 
         # Build SpeechT5 speaker embedding from cloned voice
-        # If speaker_emb_t is provided, use it; otherwise use default
-        if speaker_emb_t is not None and speaker_emb_t.shape[1] == 192:
-            # Project 192-dim cloned embedding to 512-dim for SpeechT5
-            # Use a simple linear projection (can be learned later)
-            spk_for_tts = torch.nn.functional.linear(
-                speaker_emb_t, torch.randn(512, 192, device=self.device) * 0.02
-            )
+        # speaker_emb_t is always provided (defaults to zeros), project to 512-dim
+        if speaker_emb_t.shape[1] == 192:
+            spk_for_tts = self.spk_proj_faraday(speaker_emb_t)
+            spk_aether_base = self.spk_proj_aether(spk_for_tts)
         else:
             spk_for_tts = self.default_speaker
+            spk_aether_base = torch.zeros(1, 192, device=self.device)
 
         for chunk in chunks:
             inputs = self.processor(text=chunk, return_tensors="pt")
@@ -180,11 +186,13 @@ class DemonTTS:
             mel = spectrogram.T.unsqueeze(0)  # [1, 80, T]
 
             # Faraday enhancement (supervised mode)
+            spk_faraday = spk_for_tts  # already 512-dim
             if use_faraday:
                 mel = mel.unsqueeze(1)  # [1, 1, 80, T]
                 text_emb = torch.zeros(1, 512, device=self.device)
-                # Use PERSISTENT projection layer (created in __init__)
-                spk_faraday = self.spk_proj_faraday(speaker_emb_t)
+                # Use PERSISTENT projection layer only for 192-dim embeddings
+                if speaker_emb_t.shape[1] == 192:
+                    spk_faraday = self.spk_proj_faraday(speaker_emb_t)
                 mel_enhanced = self.faraday.supervised_enhance(
                     mel, text_emb=text_emb, speaker_emb=spk_faraday
                 )
@@ -219,6 +227,37 @@ class DemonTTS:
     def save_wav(self, wav: np.ndarray, path: str, sample_rate: int = 24_000):
         sf.write(path, wav, sample_rate)
         print(f"[DemonTTS] Saved: {path}")
+
+    def save_audio(self, wav: np.ndarray, path: str, sample_rate: int = 24_000):
+        output = Path(path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        file_format = "FLAC" if output.suffix.lower() == ".flac" else None
+        sf.write(output, wav, sample_rate, format=file_format)
+        print(f"[DemonTTS] Saved: {output}")
+
+    def combine_chapters(
+        self,
+        chapter_paths: List[str],
+        output_path: str,
+        pause_seconds: float = 1.0,
+        sample_rate: int = 24_000,
+    ):
+        parts = []
+        pause = np.zeros(int(pause_seconds * sample_rate), dtype=np.float32)
+        for chapter_path in chapter_paths:
+            wav, sr = sf.read(chapter_path, dtype="float32")
+            if wav.ndim > 1:
+                wav = wav.mean(axis=1)
+            if sr != sample_rate:
+                wav_t = torch.from_numpy(np.atleast_1d(wav)).float().unsqueeze(0)
+                wav = (
+                    torchaudio.transforms.Resample(sr, sample_rate)(wav_t)
+                    .squeeze(0)
+                    .numpy()
+                )
+            parts.extend([wav.astype(np.float32), pause])
+        combined = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+        self.save_audio(combined, output_path, sample_rate=sample_rate)
 
 
 def main():

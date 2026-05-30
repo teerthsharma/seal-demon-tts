@@ -10,9 +10,11 @@ Expects data in ./data/faraday_pairs/*.pt with keys:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
+import gc
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
@@ -82,7 +84,7 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_
         speaker_emb = batch["speaker_emb"].to(device)
 
         try:
-            with torch.amp.autocast(device_type='cuda', enabled=use_amp):
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 # Topology loss is expensive (Ripser on CPU). Compute periodically.
                 use_topo = (topo_loss_fn is not None) and (topo_interval > 0) and (step % topo_interval == 0)
                 if use_topo:
@@ -92,6 +94,11 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_
                     loss = model.supervised_training_loss(student_mel, gt_mel, text_emb, speaker_emb)
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
+                # Free tensors that may be holding references before clearing cache
+                del student_mel, gt_mel, text_emb, speaker_emb
+                if use_topo:
+                    del pred_mel
+                gc.collect()
                 torch.cuda.empty_cache()
                 print(f"\n[OOM] Step {step}, skipping batch. Error: {e}")
                 continue
@@ -99,24 +106,42 @@ def train_epoch(model, loader, optimizer, device, grad_accum=1, epoch=0, output_
 
         loss = loss / grad_accum
 
-        if use_amp:
-            scaler.scale(loss).backward()
-        else:
-            loss.backward()
-
-        if (step + 1) % grad_accum == 0 or (step + 1) == len(loader):
+        try:
             if use_amp:
-                scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            if use_amp:
-                scaler.step(optimizer)
-                scaler.update()
+                scaler.scale(loss).backward()
             else:
-                optimizer.step()
-            optimizer.zero_grad()
+                loss.backward()
+
+            if (step + 1) % grad_accum == 0 or (step + 1) == len(loader):
+                if use_amp:
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                if use_amp:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                optimizer.zero_grad(set_to_none=True)
+                del student_mel, gt_mel, text_emb, speaker_emb, loss
+                if use_topo:
+                    del pred_mel
+                gc.collect()
+                torch.cuda.empty_cache()
+                print(f"\n[OOM] Step {step}, skipping batch during backward. Error: {e}")
+                continue
+            raise
 
         total_loss += loss.item() * grad_accum
         step_losses.append(loss.item() * grad_accum)
+
+        # Explicitly free large tensors to break reference cycles (especially
+        # with use_reentrant=False checkpointing which leaks in some PyTorch versions)
+        del student_mel, gt_mel, text_emb, speaker_emb, loss
+        if use_topo:
+            del pred_mel
 
         # Save checkpoint every 50 steps during epoch (crash protection)
         if output_dir and step > 0 and step % 50 == 0:
@@ -143,7 +168,7 @@ def validate(model, loader, device, scaler=None):
         text_emb = batch["text_emb"].to(device)
         speaker_emb = batch["speaker_emb"].to(device)
 
-        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             loss = model.supervised_training_loss(student_mel, gt_mel, text_emb, speaker_emb)
         total_loss += loss.item()
     return total_loss / len(loader)
@@ -168,7 +193,9 @@ def main():
 
     # Speed settings: TF32 for faster matmul on Ada/Ampere
     torch.set_float32_matmul_precision('high')
-    torch.backends.cudnn.benchmark = True
+    # DISABLED: cudnn.benchmark=True causes severe memory fragmentation
+    # with variable-length mel batches, leading to OOM after several epochs.
+    torch.backends.cudnn.benchmark = False
 
     model = FaradayDiffusion(
         text_dim=512,
@@ -244,6 +271,9 @@ def main():
         if "epoch" in ckpt:
             start_epoch = ckpt["epoch"] + 1
             print(f"[Resume] Resuming from epoch {start_epoch}")
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            print(f"[Resume] Restored scheduler state")
         if "scaler_state_dict" in ckpt and scaler is not None:
             scaler.load_state_dict(ckpt["scaler_state_dict"])
 
@@ -276,13 +306,18 @@ def main():
             "val_loss": val_loss,
         }, output_dir / "last.pt")
 
-        # Thermal cooldown between epochs to prevent TDR
+        # Thermal cooldown + memory defrag between epochs
         if device.type == "cuda":
             torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
             time.sleep(5)
-            print("[Thermal] 5s cooldown complete")
+            print("[Thermal] 5s cooldown + cache flush complete")
 
     print("\n[FaradayTrain] Done.")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

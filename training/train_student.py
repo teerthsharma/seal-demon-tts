@@ -2,6 +2,8 @@
 """Distill a 600M teacher (XTTS-v2) into a 180M student with LoRA."""
 
 import argparse
+import os
+import sys
 from pathlib import Path
 
 import torch
@@ -41,13 +43,27 @@ class TTSDataset(Dataset):
 
 
 def collate_fn(batch):
-    max_len = max(b["text_tokens"].size(0) for b in batch)
+    # Pad text tokens to max sequence length
+    max_text_len = max(b["text_tokens"].size(0) for b in batch)
     text_tokens = torch.stack([
-        torch.cat([b["text_tokens"], torch.zeros(max_len - b["text_tokens"].size(0), dtype=torch.long)])
+        torch.cat([b["text_tokens"], torch.zeros(max_text_len - b["text_tokens"].size(0), dtype=torch.long)])
         for b in batch
     ])
-    mel = torch.stack([b["mel"] for b in batch])
-    teacher_mel = torch.stack([b["teacher_mel"] for b in batch])
+
+    # Pad mel spectrograms to max time dimension
+    max_mel_len = max(b["mel"].size(-1) for b in batch)
+    mel = torch.stack([
+        torch.nn.functional.pad(b["mel"], (0, max_mel_len - b["mel"].size(-1)))
+        for b in batch
+    ])
+
+    # Pad teacher mel spectrograms to max time dimension
+    max_teacher_len = max(b["teacher_mel"].size(-1) for b in batch)
+    teacher_mel = torch.stack([
+        torch.nn.functional.pad(b["teacher_mel"], (0, max_teacher_len - b["teacher_mel"].size(-1)))
+        for b in batch
+    ])
+
     speaker_waveforms = [b["speaker_waveform"] for b in batch]
     return {
         "text_tokens": text_tokens,
@@ -93,8 +109,8 @@ def main():
     val_size = len(train_ds) - train_size
     train_set, val_set = torch.utils.data.random_split(train_ds, [train_size, val_size])
 
-    train_loader = get_dataloader(train_set, args.batch_size, args.num_workers, shuffle=True)
-    val_loader = get_dataloader(val_set, args.batch_size, args.num_workers, shuffle=False)
+    train_loader = get_dataloader(train_set, args.batch_size, args.num_workers, shuffle=True, collate_fn=collate_fn)
+    val_loader = get_dataloader(val_set, args.batch_size, args.num_workers, shuffle=False, collate_fn=collate_fn)
 
     logger = setup_logging("student_distill", save_dir=str(Path(args.output_dir).parent / "runs"))
     callbacks = get_checkpoint_callbacks(args.output_dir, every_n_hours=1)
@@ -123,6 +139,9 @@ def main():
         str(export_dir / "student_int8.onnx"),
     )
     print(f"[Export] Saved to {export_dir}")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

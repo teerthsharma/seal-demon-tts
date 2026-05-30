@@ -11,3 +11,14 @@ data/
 *.mp3
 .ipynb_checkpoints/
 *.log
+
+# Generated / temp files
+book_parsed/
+audiobook/
+*.pyo
+*.py[cod]
+*.bak
+*.new
+*.transformer
+gpu_check.txt
+master_launch.log

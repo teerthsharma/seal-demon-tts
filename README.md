@@ -530,7 +530,16 @@ python ouroboros_trainer.py \
 
 This runs the self-improving loop. Each pass generates better data from the trained model, then retrains. The snake consumes itself and grows stronger.
 
-### Phase 5: Generate Audiobooks
+### Phase 5: Run the 7-Hour Local Pipeline (The "No More Robots" Fix)
+
+If your previous generations sounded like a robotic alien having a stroke (backward pass artifacts), use the 7-hour autonomous script. This generates a human male (white) vocal tract embedding, injects backward-pass corruptions into the training data so Faraday learns to fix them, trains all three models (Faraday, Aether, Student), and generates the full audiobook.
+
+```bash
+# 2h Faraday + 2h Aether + 2h Student + 1h Generation
+bash train_7_hours.sh
+```
+
+### Phase 6: Generate Audiobooks
 
 ```bash
 python gui.py

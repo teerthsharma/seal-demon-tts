@@ -1,6 +1,7 @@
 """Shared training utilities for demon-tts."""
 
 import os
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -26,16 +27,20 @@ def get_dataloader(
     num_workers: int = 4,
     shuffle: bool = True,
     pin_memory: bool = True,
+    collate_fn=None,
 ) -> DataLoader:
     """Build a standard DataLoader with best-practice defaults."""
-    return DataLoader(
-        dataset,
+    kwargs = dict(
+        dataset=dataset,
         batch_size=batch_size,
         num_workers=num_workers,
         shuffle=shuffle,
         pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
     )
+    if collate_fn is not None:
+        kwargs["collate_fn"] = collate_fn
+    return DataLoader(**kwargs)
 
 
 def get_checkpoint_callbacks(output_dir: str, every_n_hours: Optional[int] = 1):
@@ -62,6 +67,3 @@ def get_checkpoint_callbacks(output_dir: str, every_n_hours: Optional[int] = 1):
         )
     callbacks.append(EarlyStopping(monitor="val_loss", patience=10, mode="min"))
     return callbacks
-
-
-from datetime import timedelta

@@ -187,14 +187,20 @@ impl DemonPipeline {
         let wav_arr = Array2::from_shape_vec((1, t), waveform.to_vec())?;
         let mel_arr = mel.clone().to_shape((1, 80, mel_t))?.into_owned();
         let spk_arr = Array2::from_shape_vec((1, 192), speaker_emb.to_vec())?;
+        let f0_arr = Array2::from_shape_vec((1, mel_t), vec![0.0f32; mel_t])?;
+        let energy_arr = Array2::from_shape_vec((1, mel_t), vec![0.0f32; mel_t])?;
 
         let wav_val = Tensor::from_array(wav_arr.into_dyn())?;
         let mel_val = Tensor::from_array(mel_arr.into_dyn())?;
         let spk_val = Tensor::from_array(spk_arr.into_dyn())?;
+        let f0_val = Tensor::from_array(f0_arr.into_dyn())?;
+        let energy_val = Tensor::from_array(energy_arr.into_dyn())?;
         let outputs = self.aether.run(ort::inputs! {
             "waveform" => wav_val,
             "mel" => mel_val,
             "speaker_emb" => spk_val,
+            "f0" => f0_val,
+            "energy" => energy_val,
         })?;
 
         let (shape, data) = outputs["waveform"].try_extract_tensor::<f32>()?;
@@ -206,14 +212,35 @@ impl DemonPipeline {
 }
 
 fn read_npy_vec(path: &str) -> Result<Vec<f32>> {
-    // Stub: use numpy crate or memmap in production.
-    // For now, read a simple JSON float array if .json, else error.
     if path.ends_with(".json") {
         let s = std::fs::read_to_string(path)?;
         let v: Vec<f32> = serde_json::from_str(&s)?;
         return Ok(v);
     }
-    anyhow::bail!("Speaker embedding must be provided as a .json float array (192 dims) until npy reader is added.")
+    // Minimal .npy reader for float32 1-D arrays
+    let data = std::fs::read(path)?;
+    if &data[..6] != b"\x93NUMPY" {
+        anyhow::bail!("Not a valid .npy file: {}", path);
+    }
+    // Parse header length (version 1.0: bytes 8-9, version 2.0: bytes 8-11)
+    let (header_len, header_start) = if data[6] == 1 && data[7] == 0 {
+        (u16::from_le_bytes([data[8], data[9]]) as usize, 10)
+    } else if data[6] == 2 && data[7] == 0 {
+        (u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize, 12)
+    } else {
+        anyhow::bail!("Unsupported .npy version")
+    };
+    let header = std::str::from_utf8(&data[header_start..header_start + header_len])?;
+    // Ensure dtype is float32
+    if !header.contains("'descr': '<f4'") && !header.contains("\"descr\": \"<f4\"") {
+        anyhow::bail!("Expected float32 .npy, got: {}", header);
+    }
+    let data_start = header_start + header_len;
+    let floats: Vec<f32> = data[data_start..]
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    Ok(floats)
 }
 
 #[cfg(test)]

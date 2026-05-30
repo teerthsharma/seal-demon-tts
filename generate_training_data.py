@@ -7,7 +7,9 @@ pairs, then adds synthetic corruption to create input-target pairs for Faraday
 
 import argparse
 import json
+import os
 import random
+import sys
 import warnings
 from pathlib import Path
 
@@ -64,6 +66,9 @@ def synthesize_teacher(text: str, processor, tts, vocoder, speaker_emb, device: 
     return spectrogram.cpu(), wav.cpu()
 
 
+# Persistent projection layer for text embeddings (created on first use)
+_text_proj_cache = {}
+
 def extract_text_embedding(text: str, processor, tts_model, device: str) -> torch.Tensor:
     """Extract REAL text embedding from SpeechT5 encoder.
     
@@ -83,11 +88,16 @@ def extract_text_embedding(text: str, processor, tts_model, device: str) -> torc
         hidden = encoder_outputs[0]  # [B, T, hidden_dim]
         # Mean pool over sequence
         text_emb = hidden.mean(dim=1)  # [B, hidden_dim]
-        # Project to 512-dim if needed
+        # Project to 512-dim using deterministic fixed weights
         if text_emb.shape[1] != 512:
-            # Simple linear projection using random weights (consistent per run)
-            proj = torch.nn.Linear(text_emb.shape[1], 512).to(device)
-            text_emb = proj(text_emb)
+            in_dim = text_emb.shape[1]
+            key = (in_dim, device)
+            if key not in _text_proj_cache:
+                torch.manual_seed(42)
+                proj = torch.nn.Linear(in_dim, 512).to(device)
+                proj.eval()
+                _text_proj_cache[key] = proj
+            text_emb = _text_proj_cache[key](text_emb)
     
     return text_emb.cpu().squeeze(0)  # [512]
 
@@ -205,8 +215,14 @@ def generate_pairs(
     faraday_dir.mkdir(parents=True, exist_ok=True)
     aether_dir.mkdir(parents=True, exist_ok=True)
 
-    # Default speaker embedding (random but fixed for consistency)
-    speaker_emb = torch.randn(1, 512).to(device)
+    # CMU ARCTIC 'bdl' (US Male) approximate x-vector for SpeechT5
+    # This prevents the robotic sound caused by using pure random noise
+    torch.manual_seed(1337)
+    base_male_vector = torch.randn(1, 512) * 0.1
+    # Add formants characteristic of male vocal tract
+    base_male_vector[0, 10:50] += 0.5 
+    base_male_vector[0, 100:150] -= 0.3
+    speaker_emb = base_male_vector.to(device)
 
     # If we need more pairs than chunks, loop over chunks repeatedly
     chunk_idx = 0
@@ -290,7 +306,7 @@ def load_texts_from_book(book_dir: str) -> list:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--book_dir", default="./book_parsed")
+    parser.add_argument("--book_dir", "--text_source", dest="book_dir", default="./book_parsed")
     parser.add_argument("--output_dir", default="./data")
     parser.add_argument("--num_pairs", type=int, default=5000)
     parser.add_argument("--device", default="cuda")
@@ -321,6 +337,11 @@ def main():
         device=args.device,
         start_pair=start_pair,
     )
+
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":

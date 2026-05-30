@@ -14,7 +14,6 @@ import argparse
 import subprocess
 import sys
 import time
-import os
 from pathlib import Path
 
 
@@ -43,6 +42,22 @@ def find_latest_checkpoint(checkpoint_dir: str, pattern: str = "*.pt") -> str:
     return str(checkpoints[0]) if checkpoints else None
 
 
+def find_latest_checkpoint_any(checkpoint_dir: Path, patterns: list[str]) -> str:
+    """Find the newest checkpoint matching any of the provided patterns.
+
+    Patterns are checked IN ORDER — e.g. last.pt is preferred over
+    epoch*_emergency.pt even if the emergency file has a newer mtime.
+    This prevents resuming from stale emergency checkpoints.
+    """
+    if not checkpoint_dir.exists():
+        return None
+    for pattern in patterns:
+        matches = sorted(checkpoint_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        if matches:
+            return str(matches[0])
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sequential Demon-TTS Training Scheduler")
     parser.add_argument("--faraday-epochs", type=int, default=100, help="Epochs for Faraday")
@@ -63,9 +78,15 @@ def main():
     aether_ckpt = args.aether_resume
     if args.auto_resume:
         if not faraday_ckpt:
-            faraday_ckpt = find_latest_checkpoint(base_dir / "checkpoints" / "faraday", "epoch_*.pt")
+            faraday_ckpt = find_latest_checkpoint_any(
+                base_dir / "checkpoints" / "faraday",
+                ["last.pt", "epoch*_emergency.pt", "epoch*.pt", "best.pt"],
+            )
         if not aether_ckpt:
-            aether_ckpt = find_latest_checkpoint(base_dir / "checkpoints" / "aether", "epoch_*.pt")
+            aether_ckpt = find_latest_checkpoint_any(
+                base_dir / "checkpoints" / "aether",
+                ["last.pt", "epoch*_emergency.pt", "epoch*.pt", "best.pt"],
+            )
         if faraday_ckpt:
             print(f"[Scheduler] Auto-resume Faraday: {faraday_ckpt}")
         if aether_ckpt:
@@ -79,7 +100,11 @@ def main():
             str(faraday_script),
             args.faraday_epochs,
             resume_ckpt=faraday_ckpt,
-            extra_args=["--batch_size", "2", "--grad_accum", "4"]
+            extra_args=[
+                "--batch_size", "1",
+                "--grad_accum", "8",
+                "--topo_interval", "0",
+            ]
         )
         if exit_code != 0:
             print(f"[Scheduler] Faraday training failed with code {exit_code}")
@@ -96,7 +121,7 @@ def main():
             str(aether_script),
             args.aether_epochs,
             resume_ckpt=aether_ckpt,
-            extra_args=["--batch_size", "4"]
+            extra_args=["--batch_size", "1", "--grad_accum", "4"]
         )
         if exit_code != 0:
             print(f"[Scheduler] Aether training failed with code {exit_code}")

@@ -26,7 +26,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
 from demo_tts import DemonTTS
@@ -222,7 +221,7 @@ class MultiPassTTS:
         self.tts = DemonTTS(device=device)
         self.rag = RAGContextStore()
         self.analyzer = EmotionAnalyzer()
-        self.device = device
+        self.device = self.tts.device
 
     def _chunk_text(self, text: str, max_tokens: int = 400) -> List[str]:
         """Split text into chunks respecting sentence boundaries."""
@@ -243,14 +242,16 @@ class MultiPassTTS:
     def pass1_draft(self, segments: List[Segment], speaker_emb=None) -> List[Segment]:
         """Pass 1: Generate draft audio and extract mel embeddings."""
         print("[Pass 1/6] Generating draft audio...")
+        # Convert torch tensor to numpy if needed
+        spk_np = speaker_emb.detach().cpu().numpy() if isinstance(speaker_emb, torch.Tensor) else speaker_emb
         for seg in tqdm(segments, desc="Draft"):
-            wav = self.tts.synthesize(seg.text, speaker_emb=speaker_emb)
+            wav = self.tts.synthesize(seg.text, speaker_emb=spk_np)
             seg.draft_audio = wav
             # Extract mel for context embedding
             wav_tensor = torch.from_numpy(wav).to(self.device).unsqueeze(0)
             mel = self.tts.mel_transform(wav_tensor)
             seg.draft_mel = mel.cpu().numpy()
-            # Simple context embedding = mean mel
+            # Simple context embedding = mean mel over freq and time
             seg.context_embedding = mel.mean(dim=(0,1)).cpu().numpy()
         return segments
 
@@ -307,12 +308,12 @@ class MultiPassTTS:
                 perturbation = torch.randn_like(spk) * 0.1
                 spk = spk + perturbation
 
-            # Synthesize with modulated voice
-            wav = self.tts.synthesize(seg.text, speaker_emb=spk)
+            # Synthesize with modulated voice (convert torch tensor to numpy)
+            spk_np = spk.detach().cpu().numpy() if spk is not None else None
+            wav = self.tts.synthesize(seg.text, speaker_emb=spk_np)
 
             # Apply speaking rate shift via resampling
             if seg.speaking_rate != 1.0:
-                import torchaudio
                 wav_tensor = torch.from_numpy(wav).unsqueeze(0)
                 orig_sr = 24000
                 new_sr = int(orig_sr / seg.speaking_rate)
@@ -321,12 +322,12 @@ class MultiPassTTS:
                 # Simple approach: just resample back
                 wav = torchaudio.transforms.Resample(new_sr, orig_sr)(resampled).squeeze().numpy()
 
-            # Apply pitch shift if needed
+            # Apply pitch shift if needed (placeholder — phase vocoder needed for real shift)
             if seg.pitch_shift != 0.0:
-                import torchaudio
+                # Placeholder: apply gain modulation to simulate emphasis
                 wav_tensor = torch.from_numpy(wav).unsqueeze(0)
-                shifted = torchaudio.transforms.Vol(gain=1.0)(wav_tensor)  # placeholder
-                # Real pitch shift would use phase vocoder
+                gain = 1.0 + abs(seg.pitch_shift) * 0.05
+                shifted = torchaudio.transforms.Vol(gain=gain)(wav_tensor)
                 wav = shifted.squeeze().numpy()
 
             seg.final_audio = wav
@@ -339,7 +340,12 @@ class MultiPassTTS:
         Apply cross-fade at boundaries and ensure consistent loudness.
         """
         print("[Pass 5/6] Cross-segment smoothing...")
-        import librosa
+        # librosa is optional; RMS normalization works without it
+        try:
+            import librosa
+            _ = librosa  # suppress unused warning if available
+        except ImportError:
+            pass
 
         # Normalize loudness across all segments
         target_lufs = -23.0
@@ -394,15 +400,16 @@ class MultiPassTTS:
                     speaker_emb=self.tts.spk_proj_faraday(spk_t)
                 )
 
-                # Vocoder
-                wav_enh = self.tts.vocoder(mel_enh.squeeze(1))
+                # Vocoder expects [T, 80] (time-first)
+                wav_enh = self.tts.vocoder(mel_enh.squeeze(1).squeeze(0).T)
 
                 # Aether filter
-                wav_enh_24k = self.tts.resample_16to24(wav_enh)
-                mel_24k = self.tts.mel_transform_24k(wav_enh_24k).unsqueeze(1)
+                wav_enh_24k = self.tts.resample_16to24(wav_enh)  # [T_24k]
+                wav_enh_24k = wav_enh_24k.unsqueeze(0).unsqueeze(0)  # [1, 1, T_24k]
+                mel_24k = self.tts.mel_transform(wav_enh_24k.squeeze(1))  # [1, 80, T_mel]
                 f0 = torch.zeros(1, 1, mel_24k.size(-1), device=self.device)
                 energy = mel_24k.mean(dim=1, keepdim=True)
-                refined = self.tts.aether(wav_enh_24k.unsqueeze(1), mel_24k, spk_t, f0, energy)
+                refined = self.tts.aether(wav_enh_24k, mel_24k, spk_t, f0, energy)
 
                 seg.final_audio = refined.squeeze().cpu().numpy()
 

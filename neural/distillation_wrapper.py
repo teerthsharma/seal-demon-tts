@@ -73,6 +73,9 @@ class DistillationTrainer(pl.LightningModule):
             except Exception as e:
                 print(f"[Warning] Could not load teacher model: {e}. Using GT-only loss.")
                 self.teacher = None
+                # Disable teacher distillation weight so loss computation is honest
+                # and we don't waste compute on a teacher-less L1 term.
+                self.teacher_weight = 0.0
 
     def forward(self, text_tokens, speaker_waveform):
         speaker_emb = self.speaker_encoder(speaker_waveform)

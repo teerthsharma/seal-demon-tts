@@ -92,7 +92,7 @@ async def text_to_speech(req: TTSRequest):
         speaker_emb = tts_engine.clone_voice(tmp_path)
         Path(tmp_path).unlink(missing_ok=True)
     elif req.voice_id in tts_engine.voices:
-        speaker_emb = torch.tensor(tts_engine.voices[req.voice_id]).to(tts_engine.device)
+        speaker_emb = np.array(tts_engine.voices[req.voice_id], dtype=np.float32)
     
     # Synthesize
     try:
@@ -147,7 +147,7 @@ async def clone_voice(audio_b64: str, name: str):
     
     try:
         emb = tts_engine.clone_voice(tmp_path)
-        tts_engine.voices[name] = emb.cpu().tolist()
+        tts_engine.voices[name] = emb.tolist()
         tts_engine.save_voices()
     finally:
         Path(tmp_path).unlink(missing_ok=True)
