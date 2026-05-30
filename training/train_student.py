@@ -78,13 +78,14 @@ def main():
     parser.add_argument("--data_dir", required=True, help="Directory containing preprocessed .pt files")
     parser.add_argument("--teacher_model", default="tts_models/multilingual/multi-dataset/xtts_v2", help="TTS model name for teacher")
     parser.add_argument("--output_dir", default="checkpoints/student", help="Checkpoint output dir")
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--max_steps", type=int, default=100_000)
     parser.add_argument("--resume_from_checkpoint", default=None)
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--warmup_steps", type=int, default=4_000)
     args = parser.parse_args()
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     pl.seed_everything(42)
 
@@ -122,10 +123,10 @@ def main():
         devices="auto",
         precision="16-mixed",
         gradient_clip_val=1.0,
-        accumulate_grad_batches=2,
+        accumulate_grad_batches=4,
         callbacks=callbacks,
         logger=logger,
-        val_check_interval=5000,
+        val_check_interval=1000,
         check_val_every_n_epoch=None,
     )
 

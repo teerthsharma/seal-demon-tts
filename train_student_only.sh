@@ -42,12 +42,23 @@ fi
 
 echo "[StudentOnly] Starting training..." | tee -a $LOGFILE
 set +e
+# Find latest checkpoint for auto-resume
+RESUME_CKPT=""
+if [ -d "$OUTPUT_DIR" ]; then
+    LATEST=$(ls -t "$OUTPUT_DIR"/train-*.ckpt 2>/dev/null | head -1)
+    if [ -n "$LATEST" ]; then
+        RESUME_CKPT="--resume_from_checkpoint $LATEST"
+        echo "[StudentOnly] Resuming from $LATEST" | tee -a $LOGFILE
+    fi
+fi
+
 $PYTHON training/train_student.py \
     --data_dir "$DATA_DIR" \
     --max_steps "$MAX_STEPS" \
-    --batch_size 4 \
+    --batch_size 2 \
     --num_workers 0 \
-    --output_dir "$OUTPUT_DIR" 2>&1 | tee -a $LOGFILE
+    --output_dir "$OUTPUT_DIR" \
+    $RESUME_CKPT 2>&1 | tee -a $LOGFILE
 EXIT=$?
 set -e
 

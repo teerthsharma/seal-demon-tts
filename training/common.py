@@ -44,17 +44,32 @@ def get_dataloader(
 
 
 def get_checkpoint_callbacks(output_dir: str, every_n_hours: Optional[int] = 1):
-    """Return standard checkpoint + early-stop callbacks."""
+    """Return standard checkpoint + early-stop callbacks.
+
+    Includes both val_loss-monitored AND train_loss-monitored checkpoints
+    so progress is saved even before the first validation run.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
     callbacks = [
+        # Best-by-validation checkpoint (the quality gate)
         ModelCheckpoint(
             dirpath=output_dir,
-            filename="{epoch}-{step}",
-            save_top_k=3,
+            filename="best-{epoch}-{step}",
+            save_top_k=2,
             monitor="val_loss",
             mode="min",
-            every_n_train_steps=500,
+            every_n_train_steps=1000,
             save_last=True,
-        )
+        ),
+        # Frequent train-loss checkpoint (the safety net — always saves)
+        ModelCheckpoint(
+            dirpath=output_dir,
+            filename="train-{epoch}-{step}",
+            save_top_k=-1,  # keep all
+            monitor="train_loss",
+            mode="min",
+            every_n_train_steps=250,
+        ),
     ]
     if every_n_hours:
         callbacks.append(
