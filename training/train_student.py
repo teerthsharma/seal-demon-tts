@@ -109,8 +109,9 @@ def main():
     val_size = len(train_ds) - train_size
     train_set, val_set = torch.utils.data.random_split(train_ds, [train_size, val_size])
 
-    train_loader = get_dataloader(train_set, args.batch_size, args.num_workers, shuffle=True, collate_fn=collate_fn)
-    val_loader = get_dataloader(val_set, args.batch_size, args.num_workers, shuffle=False, collate_fn=collate_fn)
+    # Windows shared-memory crash fix: single-process data loading
+    train_loader = get_dataloader(train_set, args.batch_size, num_workers=0, shuffle=True, pin_memory=False, collate_fn=collate_fn)
+    val_loader = get_dataloader(val_set, args.batch_size, num_workers=0, shuffle=False, pin_memory=False, collate_fn=collate_fn)
 
     logger = setup_logging("student_distill", save_dir=str(Path(args.output_dir).parent / "runs"))
     callbacks = get_checkpoint_callbacks(args.output_dir, every_n_hours=1)

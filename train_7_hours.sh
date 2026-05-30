@@ -153,21 +153,21 @@ fi
 
 echo "  [3/4c] Training Student Model..." | tee -a $LOGFILE
 set +e
-$PYTHON training/train_student.py --data_dir ./data/student_pairs --max_steps 15000 --batch_size 4 2>&1 | tee -a $LOGFILE
+$PYTHON training/train_student.py --data_dir ./data/student_pairs --max_steps 15000 --batch_size 4 --num_workers 0 2>&1 | tee -a $LOGFILE
 STUDENT_EXIT=$?
 set -e
 if [ "$STUDENT_EXIT" -ne 0 ]; then
     if tail -30 "$LOGFILE" | grep -q "\[Export\] Saved to"; then
         echo "[WARN] Student training exited with code $STUDENT_EXIT (likely Windows CUDA cleanup). Continuing..." | tee -a $LOGFILE
     else
-        echo "[ERROR] Student training failed with code $STUDENT_EXIT" | tee -a $LOGFILE
-        exit $STUDENT_EXIT
+        echo "[WARN] Student training failed with code $STUDENT_EXIT — audiobook generation will still proceed." | tee -a $LOGFILE
+        echo "[WARN] You can re-run student training later with: bash train_student_only.sh" | tee -a $LOGFILE
     fi
 fi
 
-# --- STEP 4: Audiobook ---
+# --- STEP 4: Audiobook (Judged, chapter-by-chapter) ---
 echo "" | tee -a $LOGFILE
-echo "[4/4] Generating Full Audiobook..." | tee -a $LOGFILE
+echo "[4/4] Generating Judged Audiobook chapter-by-chapter..." | tee -a $LOGFILE
 
 BOOK_COUNT=$(count_files "book_parsed/*.json")
 if [ "$BOOK_COUNT" -eq 0 ]; then
@@ -175,69 +175,18 @@ if [ "$BOOK_COUNT" -eq 0 ]; then
     exit 1
 fi
 
-$PYTHON -c "
-import json, soundfile as sf, numpy as np, torch, os, sys
-from pathlib import Path
-from pipeline_chapter2_master import DemonTTSMaster
-
-Path('$OUTPUT_DIR').mkdir(parents=True, exist_ok=True)
-
-# Try fp16 first (fast, low VRAM), fallback to fp32 if dtype mismatch
-for fp16 in [True, False]:
-    try:
-        tts = DemonTTSMaster(use_fp16=fp16)
-        print(f'[Master] Using fp16={fp16}')
-        break
-    except Exception as e:
-        print(f'[Master] fp16={fp16} init failed: {e}')
-        if not fp16:
-            raise
-
-# Generate human male voice embedding
-torch.manual_seed(1337)
-base_male_vector = torch.randn(1, 512) * 0.1
-base_male_vector[0, 10:50] += 0.5
-base_male_vector[0, 100:150] -= 0.3
-tts.speaker_emb = base_male_vector.to(tts.device)
-
-# Load first parsed book
-book_files = sorted(Path('book_parsed').glob('*.json'))
-book_file = book_files[0]
-with open(book_file, 'r', encoding='utf-8') as f:
-    book = json.load(f)
-
-pause = np.zeros(int(1.0 * 24000), dtype=np.float32)
-parts = []
-chapter_count = 0
-
-for chapter_name, chapter_data in book.items():
-    text = chapter_data.get('text', '')
-    if not text.strip():
-        continue
-    chapter_count += 1
-    print(f'[{chapter_count}] {chapter_name}...')
-    try:
-        wav = tts.synthesize(text)
-        safe_name = ''.join(c if c.isalnum() else '_' for c in chapter_name)
-        out_path = Path('$OUTPUT_DIR') / f'{safe_name}.flac'
-        sf.write(out_path, wav, 24000, format='FLAC')
-        print(f'  -> {out_path} ({len(wav)/24000:.1f}s)')
-        parts.extend([wav, pause])
-    except Exception as e:
-        print(f'  -> FAILED: {e}')
-
-if parts:
-    parts.pop()
-    combined = np.concatenate(parts)
-    full_path = Path('$OUTPUT_DIR') / 'FULL_Audiobook_Male_Voice.flac'
-    sf.write(full_path, combined, 24000, format='FLAC')
-    print(f'\nFULL BOOK: {full_path}')
-    print(f'Total: {len(combined)/24000/60:.1f} minutes')
-
-sys.stdout.flush()
-sys.stderr.flush()
-os._exit(0)
-" 2>&1 | tee -a $LOGFILE
+set +e
+$PYTHON generate_audiobook_judged.py --book_dir ./book_parsed --output_dir "$OUTPUT_DIR" --student_data_dir ./data/student_pairs_from_audiobook 2>&1 | tee -a $LOGFILE
+AUDIO_EXIT=$?
+set -e
+if [ "$AUDIO_EXIT" -ne 0 ]; then
+    if tail -30 "$LOGFILE" | grep -q "FULL BOOK:"; then
+        echo "[WARN] Audiobook script exited with code $AUDIO_EXIT (likely Windows CUDA cleanup). Output is valid." | tee -a $LOGFILE
+    else
+        echo "[ERROR] Audiobook generation failed with code $AUDIO_EXIT" | tee -a $LOGFILE
+        exit $AUDIO_EXIT
+    fi
+fi
 
 # --- DONE ---
 END_TIME=$(date +%s)
